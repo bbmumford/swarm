@@ -1,0 +1,13 @@
+version: v1
+name: buf.build/bbmumford/swarm
+lint:
+  use:
+    - MINIMAL
+  except:
+    - PACKAGE_VERSION_SUFFIX
+    - PACKAGE_DIRECTORY_MATCH
+    - ENUM_ZERO_VALUE_SUFFIX
+    - ENUM_VALUE_PREFIX
+breaking:
+  use:
+    - WIRE

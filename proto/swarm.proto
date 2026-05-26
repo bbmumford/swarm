@@ -1,0 +1,106 @@
+// Copyright (c) 2026 HSTLES / ORBTR Pty Ltd. All Rights Reserved.
+// Queries: licensing@hstles.com
+//
+// Swarm protocol wire format — Plumtrees frames + δ-CRDT record envelope.
+
+syntax = "proto3";
+
+package swarm.v1;
+
+option go_package = "github.com/bbmumford/swarm/proto/pb";
+
+// Record is the signed envelope carried over the swarm. Body is opaque
+// at the transport layer — consumers register typed subscribers per Topic.
+//
+// HLC (hybrid logical clock) gives total order. Sig covers:
+//   topic || node_id || hlc || body || tombstone
+message Record {
+  string topic = 1;        // tenant- and network-scoped topic name
+  bytes  node_id = 2;      // Ed25519 pubkey (origin of this Record)
+  uint64 hlc = 3;          // hybrid logical clock
+  bytes  body = 4;         // opaque; topic-typed
+  bool   tombstone = 5;    // body should be empty when true
+  bytes  sig = 6;          // Ed25519 over the above fields
+}
+
+// Frame is the on-wire envelope for swarm protocol messages.
+message Frame {
+  oneof kind {
+    EagerPush            eager = 1;          // tree-edge eager push (full Record)
+    IHave                ihave = 2;          // lazy push announcement (digest only)
+    Graft                graft = 3;          // tree-edge promotion
+    Prune                prune = 4;          // tree-edge demotion
+    MerkleProbe          merkle = 5;         // anti-entropy probe
+    MerkleRange          merkle_range = 6;   // anti-entropy range reconciliation
+    Keepalive            keepalive = 7;      // empty payload, keeps tree edge alive
+    ContentFetchRequest  fetch_req = 8;      // point-to-point content pull
+    ContentFetchResponse fetch_resp = 9;     // point-to-point content reply
+  }
+}
+
+// ContentFetchRequest is a point-to-point pull of content addressed by
+// SHA256 hash. The receiver looks up its local ContentProvider and
+// returns the bytes (or an error) in a paired ContentFetchResponse.
+// The request_id is opaque correlation owned by the originator; the
+// receiver echoes it on the response so the originator can route the
+// reply back to the waiting Fetch call.
+message ContentFetchRequest {
+  uint64 request_id = 1;
+  bytes  hash = 2;         // SHA256 of requested content (32 bytes)
+}
+
+// ContentFetchResponse carries the requested bytes (or an error) back
+// to the originator. error is non-empty when the receiver cannot serve
+// the request (not held, provider unavailable, etc.) and body is empty
+// in that case.
+message ContentFetchResponse {
+  uint64 request_id = 1;
+  bytes  body = 2;         // empty when error is set
+  string error = 3;        // empty on success
+}
+
+// EagerPush carries the full Record along tree edges.
+message EagerPush {
+  Record record = 1;
+  uint32 ttl = 2; // bounded fan-out
+}
+
+// IHave announces a digest of a Record to non-tree-edge peers. They can
+// then issue a Graft to pull the full Record.
+message IHave {
+  string topic = 1;
+  bytes  node_id = 2;
+  uint64 hlc = 3;
+  bytes  body_hash = 4; // SHA256(body)
+}
+
+// Graft promotes the sender to a tree edge from the receiver's perspective.
+message Graft {
+  string topic = 1;
+  bytes  node_id = 2; // the Record's origin we want to pull
+  uint64 hlc = 3;
+}
+
+// Prune demotes the sender from a tree edge.
+message Prune {
+  string topic = 1; // optional — empty means all topics
+}
+
+// MerkleProbe sends the local Merkle root for a topic + range.
+message MerkleProbe {
+  string topic = 1;
+  bytes  range_start = 2; // first node_id in range
+  bytes  range_end = 3;   // last node_id in range
+  bytes  root_hash = 4;   // local Merkle root for this range
+}
+
+// MerkleRange is the response: send all Records in a range (or a sub-range
+// hash chain if too large).
+message MerkleRange {
+  string         topic = 1;
+  repeated Record records = 2;
+  bool           truncated = 3; // when truncated, caller should split the range
+}
+
+// Keepalive carries nothing — just maintains tree-edge liveness.
+message Keepalive {}

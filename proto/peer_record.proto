@@ -1,0 +1,120 @@
+// Copyright (c) 2026 HSTLES / ORBTR Pty Ltd. All Rights Reserved.
+// Queries: licensing@hstles.com
+//
+// Unified PeerRecord — one signed Ed25519 envelope per peer per fabric.
+//
+// Carries identity + addresses + RPC handlers + capabilities + grade +
+// multi-network info, all atomic. Updates republish the full record.
+
+syntax = "proto3";
+
+package swarm.v1;
+
+option go_package = "github.com/bbmumford/swarm/proto/pb";
+
+// PeerRecord lives in the body of a swarm.Record on topics like
+// "fleet.peer" or "agent.peer.<tenantID>.<networkID>".
+message PeerRecord {
+  // ---------- Identity ----------
+  bytes  node_id = 1;          // Ed25519 pubkey
+  uint64 epoch = 2;            // republish counter; monotonic per node_id
+  int64  issued_at = 3;        // unix nanoseconds
+  int64  expires_at = 4;       // unix nanoseconds (0 = no expiry)
+
+  // ---------- Addresses ----------
+  repeated Address addresses = 5;
+
+  // ---------- RPC handlers + grade ----------
+  repeated string rpc_handlers = 6;  // fully-qualified names this peer serves
+  Grade           grade = 7;          // QoS class (preferred for dispatch)
+  Grade           max_grade = 8;      // capability ceiling
+
+  // ---------- Capabilities ----------
+  Capabilities capabilities = 9;
+
+  // ---------- Multi-network membership (agent fabric) ----------
+  repeated NetworkInfo networks = 10;
+
+  // ---------- Signature ----------
+  bytes sig = 99; // Ed25519 over wire-format excluding sig
+}
+
+// Address advertises a way to reach this peer.
+message Address {
+  enum Transport {
+    UNKNOWN = 0;
+    NOISE_UDP = 1;
+    WEBSOCKET = 2;
+    GRPC = 3;
+    HTTP = 4;
+  }
+
+  Transport transport = 1;
+  string    host = 2;   // IP or hostname
+  uint32    port = 3;
+  string    sni = 4;    // optional TLS SNI hint
+  uint32    rtt_estimate_ms = 5; // observed RTT for adaptive selection
+  uint32    region_hint = 6;     // fly region or geo code (advisory)
+}
+
+// Grade is the QoS / capability tier this peer advertises.
+enum Grade {
+  GRADE_UNKNOWN = 0;
+  GRADE_BEST_EFFORT = 1;
+  GRADE_RELIABLE = 2;
+  GRADE_LOW_LATENCY = 3;
+  GRADE_HIGH_THROUGHPUT = 4;
+}
+
+// Capabilities advertises peer attributes for routing + RPC dispatch + policy.
+message Capabilities {
+  repeated string roles = 1;                 // anchor, relay, edge, dhcp, print, ddns, egress
+  repeated string tags = 2;                  // arbitrary k=v style tag strings ("env=prod")
+
+  QuarantineState quarantine_status = 3;     // active/cleared/none
+  string         inspection_mode = 4;        // "off" | "lite" | "full"
+  repeated string effective_tags = 5;        // tag expression results after policy compilation
+  repeated SegmentSpec segment_affinity = 6; // VRF/VLAN assignments for edge-role peers
+  repeated UserSession active_users = 7;     // who's logged in (multi-session)
+  repeated string edge_roles = 8;            // telemetry-aggregator, otel-exporter, c2-cache, signaling-relay, snmp-discoverer, tuf-cache
+  uint32         schema_version = 9;         // for skew detection during rolling upgrades
+  uint64         policy_epoch = 10;          // for anti-rollback consensus
+  uint64         c2_last_sync_age_ms = 11;   // freshness signal for c2-cache role
+  string         dhcp_server_addr = 12;      // when edge serves DHCP, advertise address
+
+  // Free-form k=v capability bag for forward extension. Subject to the
+  // 16 KB Record max — keep lean.
+  map<string, string> extras = 99;
+}
+
+// QuarantineState describes a peer's isolation status.
+enum QuarantineState {
+  QUARANTINE_NONE = 0;     // not quarantined
+  QUARANTINE_ACTIVE = 1;   // currently isolated; routing should exclude
+  QUARANTINE_CLEARED = 2;  // recently lifted; allow but log
+}
+
+// SegmentSpec advertises VRF/VLAN ownership for edge-role peers.
+message SegmentSpec {
+  string vrf_name = 1;
+  uint32 vlan_id = 2;
+  string nat_pool_cidr = 3; // optional
+  bool   primary = 4;       // primary owner vs secondary
+}
+
+// UserSession advertises an active OS-user session on this peer (for multi-
+// session VDI awareness). Includes only non-PII identifiers.
+message UserSession {
+  string session_id = 1; // OS session ID
+  string user_hash = 2;  // SHA256(user@domain) for cross-peer correlation without PII
+  int64  since = 3;      // unix nanoseconds
+  string state = 4;      // "active" | "cached" | "none"
+}
+
+// NetworkInfo describes an agent's overlay membership in one network.
+message NetworkInfo {
+  string network_id = 1;
+  string overlay_ip = 2;     // e.g. "10.147.20.15"
+  uint32 mtu = 3;
+  bool   primary = 4;        // is this the default network?
+}

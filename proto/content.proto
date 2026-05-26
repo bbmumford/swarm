@@ -1,0 +1,51 @@
+// Copyright (c) 2026 HSTLES / ORBTR Pty Ltd. All Rights Reserved.
+// Queries: licensing@hstles.com
+//
+// ContentTopic wire formats — single-blob and chunked manifests.
+
+syntax = "proto3";
+
+package swarm.v1;
+
+option go_package = "github.com/bbmumford/swarm/proto/pb";
+
+// ContentAdvert publishes "I hold this hash" to the swarm. Lives on the
+// `content.advert.<fabric>` topic. Adverts are time-bounded; holders
+// republish at half-TTL.
+message ContentAdvert {
+  bytes  hash = 1;        // SHA256 of content (or manifest for chunked)
+  bytes  holder = 2;      // NodeID
+  int64  expires_at = 3;  // unix nanoseconds
+  uint32 size = 4;        // bytes (advisory for capacity-aware fetcher)
+  bool   is_manifest = 5; // when true, hash addresses a Manifest (chunked)
+  bytes  sig = 6;         // Ed25519 by holder over (hash || holder || expires_at || size || is_manifest)
+}
+
+// ContentLocateQuery is broadcast when a fetcher has zero local holders
+// for a hash. Lives on `content.locate.<fabric>` topic. Subscribers reply
+// (via a separate point-to-point RPC) if they hold the hash.
+message ContentLocateQuery {
+  bytes hash = 1;
+  bytes requester = 2;  // NodeID
+  bytes sig = 3;        // Ed25519 by requester
+}
+
+// ContentLocateResponse is a point-to-point reply to a Locate query.
+// Carries a fresh ContentAdvert so the requester can index it.
+message ContentLocateResponse {
+  ContentAdvert advert = 1;
+}
+
+// Manifest describes a chunked content blob. Lives in the body of a
+// swarm.Record on a content topic, indexed by BlobHash.
+message Manifest {
+  bytes  blob_hash = 1;      // SHA256 of full reassembled content
+  uint64 total_size = 2;     // bytes
+  uint32 chunk_size = 3;     // typically 1 MB (1<<20); last chunk may be smaller
+  repeated bytes chunks = 4; // SHA256 of each chunk, in order
+  string filename = 5;       // optional human-readable name (debug only — untrusted)
+  string mime = 6;           // optional content-type hint
+  int64  published_at = 7;   // unix nanoseconds
+  bytes  publisher = 8;      // NodeID
+  bytes  sig = 9;            // Ed25519 by publisher over entire manifest
+}
