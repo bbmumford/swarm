@@ -31,13 +31,22 @@ const (
 
 // Record is the signed envelope carried over the swarm. Body is opaque to the
 // transport layer; consumers register topic types that decode Body.
+//
+// NodeID is an opaque identifier chosen by the application — when the
+// application's NodeID encoding is a non-reversible derivation of the
+// public key (e.g. a fingerprint), the verifier cannot recover the public
+// key from NodeID alone. PubKey carries the raw 32-byte Ed25519 public
+// key used to verify Sig; the verifier compares Sig against PubKey
+// directly. Topic owners that want NodeID ↔ PubKey binding enforce it
+// at the topic layer after Sig is verified.
 type Record struct {
 	Topic     Topic
 	NodeID    NodeID
 	HLC       uint64 // hybrid logical clock
 	Body      []byte
 	Tombstone bool
-	Sig       []byte // Ed25519 over (Topic || NodeID || HLC || Body || Tombstone)
+	PubKey    []byte // raw 32-byte Ed25519 public key for Sig verification
+	Sig       []byte // Ed25519 over (Topic || NodeID || HLC || Body || Tombstone || PubKey)
 }
 
 // Subscriber is invoked for every Record applied to the local store.

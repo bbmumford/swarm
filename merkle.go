@@ -4,6 +4,7 @@
 package swarm
 
 import (
+	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/binary"
 	"sort"
@@ -217,8 +218,7 @@ func (m *merkleEngine) HandleProbe(from NodeID, p *pb.MerkleProbe) {
 func (m *merkleEngine) HandleRange(from NodeID, hlc *HLC, r *pb.MerkleRange) {
 	for _, pr := range r.Records {
 		rec := recordFromProto(pr)
-		pub, ok := pubFromNodeID(rec.NodeID)
-		if !ok || !verifyRecord(rec, pub) {
+		if len(rec.PubKey) != ed25519.PublicKeySize || !verifyRecord(rec, ed25519.PublicKey(rec.PubKey)) {
 			continue
 		}
 		hlc.Observe(rec.HLC)

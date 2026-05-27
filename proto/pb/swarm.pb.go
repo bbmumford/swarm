@@ -31,15 +31,23 @@ const (
 //
 // HLC (hybrid logical clock) gives total order. Sig covers:
 //
-//	topic || node_id || hlc || body || tombstone
+//	topic || node_id || hlc || body || tombstone || pub_key
+//
+// node_id is an opaque identifier (caller-defined; may be a fingerprint or
+// other non-reversible encoding of pub_key). pub_key is the raw 32-byte
+// Ed25519 public key used to verify sig — the receiver MUST verify against
+// pub_key directly (not against any key derived from node_id). When the
+// caller cares about the node_id ↔ pub_key relationship (e.g. fingerprint
+// scheme), the application layer enforces it on top of sig verification.
 type Record struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Topic         string                 `protobuf:"bytes,1,opt,name=topic,proto3" json:"topic,omitempty"`                 // tenant- and network-scoped topic name
-	NodeId        []byte                 `protobuf:"bytes,2,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"` // Ed25519 pubkey (origin of this Record)
+	NodeId        []byte                 `protobuf:"bytes,2,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"` // opaque origin identifier (application-defined)
 	Hlc           uint64                 `protobuf:"varint,3,opt,name=hlc,proto3" json:"hlc,omitempty"`                    // hybrid logical clock
 	Body          []byte                 `protobuf:"bytes,4,opt,name=body,proto3" json:"body,omitempty"`                   // opaque; topic-typed
 	Tombstone     bool                   `protobuf:"varint,5,opt,name=tombstone,proto3" json:"tombstone,omitempty"`        // body should be empty when true
-	Sig           []byte                 `protobuf:"bytes,6,opt,name=sig,proto3" json:"sig,omitempty"`                     // Ed25519 over the above fields
+	Sig           []byte                 `protobuf:"bytes,6,opt,name=sig,proto3" json:"sig,omitempty"`                     // Ed25519 over (topic || node_id || hlc || body || tombstone || pub_key)
+	PubKey        []byte                 `protobuf:"bytes,7,opt,name=pub_key,json=pubKey,proto3" json:"pub_key,omitempty"` // raw 32-byte Ed25519 public key used to verify sig
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -112,6 +120,13 @@ func (x *Record) GetTombstone() bool {
 func (x *Record) GetSig() []byte {
 	if x != nil {
 		return x.Sig
+	}
+	return nil
+}
+
+func (x *Record) GetPubKey() []byte {
+	if x != nil {
+		return x.PubKey
 	}
 	return nil
 }
@@ -834,14 +849,15 @@ var File_swarm_proto protoreflect.FileDescriptor
 
 const file_swarm_proto_rawDesc = "" +
 	"\n" +
-	"\vswarm.proto\x12\bswarm.v1\"\x8d\x01\n" +
+	"\vswarm.proto\x12\bswarm.v1\"\xa6\x01\n" +
 	"\x06Record\x12\x14\n" +
 	"\x05topic\x18\x01 \x01(\tR\x05topic\x12\x17\n" +
 	"\anode_id\x18\x02 \x01(\fR\x06nodeId\x12\x10\n" +
 	"\x03hlc\x18\x03 \x01(\x04R\x03hlc\x12\x12\n" +
 	"\x04body\x18\x04 \x01(\fR\x04body\x12\x1c\n" +
 	"\ttombstone\x18\x05 \x01(\bR\ttombstone\x12\x10\n" +
-	"\x03sig\x18\x06 \x01(\fR\x03sig\"\xd8\x03\n" +
+	"\x03sig\x18\x06 \x01(\fR\x03sig\x12\x17\n" +
+	"\apub_key\x18\a \x01(\fR\x06pubKey\"\xd8\x03\n" +
 	"\x05Frame\x12+\n" +
 	"\x05eager\x18\x01 \x01(\v2\x13.swarm.v1.EagerPushH\x00R\x05eager\x12'\n" +
 	"\x05ihave\x18\x02 \x01(\v2\x0f.swarm.v1.IHaveH\x00R\x05ihave\x12'\n" +

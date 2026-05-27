@@ -4,6 +4,7 @@
 package swarm
 
 import (
+	"crypto/ed25519"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -174,9 +175,12 @@ func (e *plumtreesEngine) handleEager(from NodeID, ep *pb.EagerPush) error {
 	}
 	r := recordFromProto(ep.Record)
 
-	// Verify signature
-	pub, ok := pubFromNodeID(r.NodeID)
-	if !ok || !verifyRecord(r, pub) {
+	// Verify signature against the public key embedded in the record. The
+	// application's NodeID encoding may not be reversible to the public
+	// key (e.g. fingerprint schemes), so the sender stamps PubKey on
+	// every signed record. signableBytes covers PubKey so an attacker
+	// cannot swap the claimed key on a captured record.
+	if len(r.PubKey) != ed25519.PublicKeySize || !verifyRecord(r, ed25519.PublicKey(r.PubKey)) {
 		return nil // drop malformed/forged records silently
 	}
 

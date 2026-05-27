@@ -12,13 +12,18 @@ import (
 // signature input. Excludes Sig (because Sig is what we're producing).
 //
 // Layout:
-//   topic_len:u16 || topic || node_id || hlc:u64 || tombstone:u8 || body_len:u32 || body
+//   topic_len:u16 || topic || node_id || hlc:u64 || tombstone:u8 ||
+//   body_len:u32 || body || pub_key
+//
+// PubKey is included so a forger cannot rebind a valid sig to a different
+// PubKey claim (which would otherwise let a publisher impersonate any
+// peer by swapping the pubkey on a record they intercepted).
 //
 // This is a STABLE serialization independent of proto wire format —
 // signature validity does not depend on protobuf encoding quirks.
 func signableBytes(r Record) []byte {
 	topic := []byte(r.Topic)
-	buf := make([]byte, 0, 2+len(topic)+len(r.NodeID)+8+1+4+len(r.Body))
+	buf := make([]byte, 0, 2+len(topic)+len(r.NodeID)+8+1+4+len(r.Body)+len(r.PubKey))
 
 	var tlen [2]byte
 	binary.BigEndian.PutUint16(tlen[:], uint16(len(topic)))
@@ -42,16 +47,24 @@ func signableBytes(r Record) []byte {
 	buf = append(buf, blen[:]...)
 	buf = append(buf, r.Body...)
 
+	buf = append(buf, r.PubKey...)
+
 	return buf
 }
 
-// signRecord sets r.Sig = Ed25519 signature over signableBytes(r) using priv.
+// signRecord stamps r.PubKey from priv and sets r.Sig = Ed25519 signature
+// over signableBytes(r) using priv. After signRecord returns, the record
+// carries everything a remote verifier needs (PubKey + Sig).
 func signRecord(r *Record, priv ed25519.PrivateKey) {
+	if pub, ok := priv.Public().(ed25519.PublicKey); ok {
+		r.PubKey = append(r.PubKey[:0], pub...)
+	}
 	r.Sig = ed25519.Sign(priv, signableBytes(*r))
 }
 
 // verifyRecord returns true if r.Sig is a valid Ed25519 signature by pub
-// (which must be NodeID-derived) over signableBytes(r).
+// over signableBytes(r). Callers pass the public key directly (typically
+// r.PubKey, after sanity-checking its length).
 func verifyRecord(r Record, pub ed25519.PublicKey) bool {
 	if len(r.Sig) != ed25519.SignatureSize {
 		return false

@@ -35,6 +35,7 @@ func recordToProto(r Record) *pb.Record {
 		Body:      r.Body,
 		Tombstone: r.Tombstone,
 		Sig:       r.Sig,
+		PubKey:    r.PubKey,
 	}
 }
 
@@ -47,6 +48,7 @@ func recordFromProto(p *pb.Record) Record {
 		Body:      p.Body,
 		Tombstone: p.Tombstone,
 		Sig:       p.Sig,
+		PubKey:    p.PubKey,
 	}
 }
 
