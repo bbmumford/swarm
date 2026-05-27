@@ -151,6 +151,22 @@ func (n *nodeImpl) Tick(now time.Time) {
 	}
 }
 
+// ProbePeer triggers an immediate Merkle anti-entropy probe across every
+// topic to the specified peer. The transport layer's session-join hook
+// calls this so a newly-joined peer catches up in one round-trip per
+// topic instead of waiting for the periodic Tick() loop to land on
+// them. Silently no-ops when the engine isn't wired (pre-Start) or the
+// peer is unknown — the underlying Transport.Send drops the frame.
+func (n *nodeImpl) ProbePeer(peer NodeID) {
+	if n.stopped.Load() {
+		return
+	}
+	if n.merkle == nil {
+		return
+	}
+	n.merkle.ProbePeer(peer)
+}
+
 func (n *nodeImpl) Stop() error {
 	if !n.stopped.CompareAndSwap(false, true) {
 		return ErrStopped

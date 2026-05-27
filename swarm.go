@@ -173,6 +173,14 @@ type Node interface {
 	// can ignore this — the in-process background ticker calls it
 	// automatically. Used by the simulator to drive virtual time.
 	Tick(now time.Time)
+
+	// ProbePeer triggers an immediate Merkle anti-entropy probe to the
+	// specified peer across every topic this node owns records for. Use
+	// this when a session is freshly established to catch up the new peer
+	// in O(log N) hashes instead of waiting for the periodic Tick() loop
+	// to land on them. Safe to call concurrently; safe to call when peer
+	// is unknown (silently no-ops).
+	ProbePeer(peer NodeID)
 }
 
 // Unsubscribe removes a previously-registered Subscriber.

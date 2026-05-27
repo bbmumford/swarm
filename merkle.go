@@ -151,6 +151,25 @@ func (m *merkleEngine) Tick() {
 	}
 }
 
+// ProbePeer sends a full-range MerkleProbe to target for every topic
+// this node stores records for. Called by Node.ProbePeer immediately
+// after a peer joins so the new peer catches up via one root hash per
+// topic (matched roots short-circuit), or O(log N) bandwidth when
+// they differ — far faster than waiting for the periodic Tick() to
+// pick the same target by random selection.
+//
+// Suppressed only on a stopped node; otherwise fires even while
+// paused, because cold-start resync IS correctness-critical for the
+// newly joining peer.
+func (m *merkleEngine) ProbePeer(target NodeID) {
+	if target == "" {
+		return
+	}
+	for _, topic := range m.store.Topics() {
+		m.sendProbe(target, topic, nil, nil)
+	}
+}
+
 // Roots returns the current full-range Merkle roots for every topic. Used
 // for observability.
 func (m *merkleEngine) Roots() map[Topic][32]byte {
