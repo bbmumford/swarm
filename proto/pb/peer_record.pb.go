@@ -331,6 +331,14 @@ type Address struct {
 	Sni           string                 `protobuf:"bytes,4,opt,name=sni,proto3" json:"sni,omitempty"`                                             // optional TLS SNI hint
 	RttEstimateMs uint32                 `protobuf:"varint,5,opt,name=rtt_estimate_ms,json=rttEstimateMs,proto3" json:"rtt_estimate_ms,omitempty"` // observed RTT for adaptive selection
 	RegionHint    uint32                 `protobuf:"varint,6,opt,name=region_hint,json=regionHint,proto3" json:"region_hint,omitempty"`            // fly region or geo code (advisory)
+	// scope advertises the network reachability class. Lets dial-side
+	// logic distinguish a public IP/DNS name from a same-fabric private
+	// address (e.g. Fly 6PN ULA fdaa:<org>:<net>:…) without having to
+	// re-classify the host string. Receivers that see Scope:"private"
+	// matching their own origin prefix can route via the private fabric
+	// and skip the public LB. Values: "public" | "private". Empty =
+	// legacy/unknown — receivers treat as "public" for safety.
+	Scope         string `protobuf:"bytes,7,opt,name=scope,proto3" json:"scope,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -405,6 +413,13 @@ func (x *Address) GetRegionHint() uint32 {
 		return x.RegionHint
 	}
 	return 0
+}
+
+func (x *Address) GetScope() string {
+	if x != nil {
+		return x.Scope
+	}
+	return ""
 }
 
 // Capabilities advertises peer attributes for routing + RPC dispatch + policy.
@@ -777,7 +792,7 @@ const file_peer_record_proto_rawDesc = "" +
 	"\fcapabilities\x18\t \x01(\v2\x16.swarm.v1.CapabilitiesR\fcapabilities\x121\n" +
 	"\bnetworks\x18\n" +
 	" \x03(\v2\x15.swarm.v1.NetworkInfoR\bnetworks\x12\x10\n" +
-	"\x03sig\x18c \x01(\fR\x03sig\"\x93\x02\n" +
+	"\x03sig\x18c \x01(\fR\x03sig\"\xa9\x02\n" +
 	"\aAddress\x129\n" +
 	"\ttransport\x18\x01 \x01(\x0e2\x1b.swarm.v1.Address.TransportR\ttransport\x12\x12\n" +
 	"\x04host\x18\x02 \x01(\tR\x04host\x12\x12\n" +
@@ -785,7 +800,8 @@ const file_peer_record_proto_rawDesc = "" +
 	"\x03sni\x18\x04 \x01(\tR\x03sni\x12&\n" +
 	"\x0frtt_estimate_ms\x18\x05 \x01(\rR\rrttEstimateMs\x12\x1f\n" +
 	"\vregion_hint\x18\x06 \x01(\rR\n" +
-	"regionHint\"J\n" +
+	"regionHint\x12\x14\n" +
+	"\x05scope\x18\a \x01(\tR\x05scope\"J\n" +
 	"\tTransport\x12\v\n" +
 	"\aUNKNOWN\x10\x00\x12\r\n" +
 	"\tNOISE_UDP\x10\x01\x12\r\n" +

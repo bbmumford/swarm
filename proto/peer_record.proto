@@ -55,6 +55,14 @@ message Address {
   string    sni = 4;    // optional TLS SNI hint
   uint32    rtt_estimate_ms = 5; // observed RTT for adaptive selection
   uint32    region_hint = 6;     // fly region or geo code (advisory)
+  // scope advertises the network reachability class. Lets dial-side
+  // logic distinguish a public IP/DNS name from a same-fabric private
+  // address (e.g. Fly 6PN ULA fdaa:<org>:<net>:…) without having to
+  // re-classify the host string. Receivers that see Scope:"private"
+  // matching their own origin prefix can route via the private fabric
+  // and skip the public LB. Values: "public" | "private". Empty =
+  // legacy/unknown — receivers treat as "public" for safety.
+  string    scope = 7;
 }
 
 // Grade is the QoS / capability tier this peer advertises.
