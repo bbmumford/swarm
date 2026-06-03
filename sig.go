@@ -13,17 +13,31 @@ import (
 //
 // Layout:
 //   topic_len:u16 || topic || node_id || hlc:u64 || tombstone:u8 ||
-//   body_len:u32 || body || pub_key
+//   body_len:u32 || body || pub_key ||
+//   observer_node_id_len:u16 || observer_node_id || observed_at_ms:i64
 //
 // PubKey is included so a forger cannot rebind a valid sig to a different
 // PubKey claim (which would otherwise let a publisher impersonate any
 // peer by swapping the pubkey on a record they intercepted).
 //
+// ObserverNodeID + ObservedAtUnixMs are appended after the legacy payload
+// so an owner-signed record (ObserverNodeID="", ObservedAtUnixMs=0)
+// produces a signature payload whose suffix is two zero bytes (empty
+// observer_node_id_len) plus 8 zero bytes (observed_at_ms=0) — the
+// canonical bytes uniquely encode whether the record is owner-authored
+// or observer-attested. An observer cannot strip these fields and
+// resubmit as owner-authored without invalidating Sig (the byte layout
+// differs even when both suffix fields are empty/zero — the encoding is
+// always written by the signer).
+//
 // This is a STABLE serialization independent of proto wire format —
 // signature validity does not depend on protobuf encoding quirks.
 func signableBytes(r Record) []byte {
 	topic := []byte(r.Topic)
-	buf := make([]byte, 0, 2+len(topic)+len(r.NodeID)+8+1+4+len(r.Body)+len(r.PubKey))
+	observer := []byte(r.ObserverNodeID)
+	buf := make([]byte, 0,
+		2+len(topic)+len(r.NodeID)+8+1+4+len(r.Body)+len(r.PubKey)+
+			2+len(observer)+8)
 
 	var tlen [2]byte
 	binary.BigEndian.PutUint16(tlen[:], uint16(len(topic)))
@@ -48,6 +62,15 @@ func signableBytes(r Record) []byte {
 	buf = append(buf, r.Body...)
 
 	buf = append(buf, r.PubKey...)
+
+	var olen [2]byte
+	binary.BigEndian.PutUint16(olen[:], uint16(len(observer)))
+	buf = append(buf, olen[:]...)
+	buf = append(buf, observer...)
+
+	var oat [8]byte
+	binary.BigEndian.PutUint64(oat[:], uint64(r.ObservedAtUnixMs))
+	buf = append(buf, oat[:]...)
 
 	return buf
 }

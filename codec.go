@@ -29,26 +29,30 @@ func decodeFrame(b []byte) (*pb.Frame, error) {
 // recordToProto converts an in-memory Record to the wire-format pb.Record.
 func recordToProto(r Record) *pb.Record {
 	return &pb.Record{
-		Topic:     string(r.Topic),
-		NodeId:    []byte(r.NodeID),
-		Hlc:       r.HLC,
-		Body:      r.Body,
-		Tombstone: r.Tombstone,
-		Sig:       r.Sig,
-		PubKey:    r.PubKey,
+		Topic:            string(r.Topic),
+		NodeId:           []byte(r.NodeID),
+		Hlc:              r.HLC,
+		Body:             r.Body,
+		Tombstone:        r.Tombstone,
+		Sig:              r.Sig,
+		PubKey:           r.PubKey,
+		ObserverNodeId:   []byte(r.ObserverNodeID),
+		ObservedAtUnixMs: r.ObservedAtUnixMs,
 	}
 }
 
 // recordFromProto converts a wire-format pb.Record to an in-memory Record.
 func recordFromProto(p *pb.Record) Record {
 	return Record{
-		Topic:     Topic(p.Topic),
-		NodeID:    NodeID(p.NodeId),
-		HLC:       p.Hlc,
-		Body:      p.Body,
-		Tombstone: p.Tombstone,
-		Sig:       p.Sig,
-		PubKey:    p.PubKey,
+		Topic:            Topic(p.Topic),
+		NodeID:           NodeID(p.NodeId),
+		HLC:              p.Hlc,
+		Body:             p.Body,
+		Tombstone:        p.Tombstone,
+		Sig:              p.Sig,
+		PubKey:           p.PubKey,
+		ObserverNodeID:   NodeID(p.ObserverNodeId),
+		ObservedAtUnixMs: p.ObservedAtUnixMs,
 	}
 }
 

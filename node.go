@@ -247,6 +247,56 @@ func (n *nodeImpl) PublishTombstone(topic Topic) error {
 	return nil
 }
 
+// PublishObserverTombstone implements swarm.Node. It signs an
+// attestation that (topic, target) is dead with THIS node's private
+// key, marks ObserverNodeID = n.id, and broadcasts. The CRDT on every
+// consumer accumulates these attestations and only synthesises an
+// effective tombstone after K-of-N distinct ObserverNodeIDs report
+// within the corroboration window — see recordStore.applyAttestationLocked.
+//
+// Callers should restrict invocation to peers with the anchor role
+// (HSTLES Library does this at the call site in
+// mesh/node/peer_connections.go) and pair this call with the
+// corresponding LAD EvictPeer so the LAD directory converges in
+// lock-step.
+func (n *nodeImpl) PublishObserverTombstone(topic Topic, target NodeID) error {
+	if n.stopped.Load() {
+		return ErrStopped
+	}
+	if target == "" || target == n.id {
+		// Refuse to attest against self — that is the owner-tombstone
+		// path (PublishTombstone). Refuse empty target — meaningless.
+		return nil
+	}
+	now := time.Now()
+	if n.cfg.NowFn != nil {
+		now = n.cfg.NowFn()
+	}
+	r := Record{
+		Topic:            topic,
+		NodeID:           target,
+		HLC:              n.hlc.Now(),
+		Tombstone:        true,
+		ObserverNodeID:   n.id,
+		ObservedAtUnixMs: now.UnixMilli(),
+	}
+	signRecord(&r, n.priv)
+	n.plum.Publish(r)
+	n.deliverToSubs(r)
+	return nil
+}
+
+// SetObserverRoleCheck wires the application's anchor-role gate for
+// observer attestations into the recordStore. The gate receives the
+// claimed ObserverNodeID and the Sig-verified PubKey; it MUST verify
+// the (NodeID, PubKey) binding against application trust state (e.g.
+// HSTLES's role_table). Returning false from the gate rejects the
+// attestation outright. Wire this once at startup, after the role_table
+// has been initialised.
+func (n *nodeImpl) SetObserverRoleCheck(fn func(observer NodeID, pubKey []byte) bool) {
+	n.store.SetObserverRoleCheck(fn)
+}
+
 func (n *nodeImpl) SetRole(role Role) error {
 	prev := Role(n.role.Swap(uint32(role)))
 	if prev == role {

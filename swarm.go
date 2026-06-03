@@ -39,6 +39,15 @@ const (
 // key used to verify Sig; the verifier compares Sig against PubKey
 // directly. Topic owners that want NodeID ↔ PubKey binding enforce it
 // at the topic layer after Sig is verified.
+//
+// Observer-tombstone semantics: when Tombstone is true AND ObserverNodeID
+// is non-empty, this record is an ATTESTATION by ObserverNodeID that the
+// (Topic, NodeID) owner is dead. PubKey/Sig in that case prove the
+// ObserverNodeID signed the record (NOT the owner). Consumers gate on
+// K-of-N distinct ObserverNodeIDs accumulated within a corroboration
+// window before applying the effective tombstone — see recordStore.Apply.
+// When Tombstone is true and ObserverNodeID is empty, this is the
+// classical owner-signed tombstone and applies immediately.
 type Record struct {
 	Topic     Topic
 	NodeID    NodeID
@@ -46,7 +55,23 @@ type Record struct {
 	Body      []byte
 	Tombstone bool
 	PubKey    []byte // raw 32-byte Ed25519 public key for Sig verification
-	Sig       []byte // Ed25519 over (Topic || NodeID || HLC || Body || Tombstone || PubKey)
+	Sig       []byte // Ed25519 over signableBytes(Record); see sig.go
+
+	// ObserverNodeID — when set, this record is an observer-signed
+	// attestation that (Topic, NodeID)'s owner is dead. Empty for
+	// owner-signed records.
+	ObserverNodeID NodeID
+	// ObservedAtUnixMs — observer's wall-clock at the moment death was
+	// declared. Used by the corroboration-window gate; an attestation
+	// older than corroborationWindow is ignored. Zero for owner-signed
+	// records.
+	ObservedAtUnixMs int64
+}
+
+// IsObserverAttestation reports whether r is an observer-signed
+// attestation (vs an owner-signed record or classical tombstone).
+func (r Record) IsObserverAttestation() bool {
+	return r.Tombstone && r.ObserverNodeID != ""
 }
 
 // Subscriber is invoked for every Record applied to the local store.
@@ -97,6 +122,20 @@ type Config struct {
 	DisableBackgroundTicker bool
 }
 
+// Defaults for the observer-tombstone (N-of-M witness) gate.
+//
+// Apply only counts as "K distinct observers" when each attestation's
+// ObservedAtUnixMs is within DefaultObserverCorroborationWindow of every
+// other attestation in the count. Attestations older than the window are
+// pruned. DefaultObserverQuorum K must be >= 2 (anything less is no
+// quorum at all); production values are tuned so a single rogue anchor
+// cannot evict a live peer, but K live anchors observing the same death
+// converge within one corroboration window.
+const (
+	DefaultObserverQuorum              = 2
+	DefaultObserverCorroborationWindow = 5 * time.Minute
+)
+
 // PerPeerConfig captures per-peer adaptive state. Returned by Config.PerPeerConfig.
 type PerPeerConfig struct {
 	// AdaptiveInterval base period for delta-state diff to this peer.
@@ -143,7 +182,30 @@ type Node interface {
 	Publish(topic Topic, body []byte) error
 
 	// PublishTombstone publishes a tombstone for the (topic, node) pair.
+	// The signing key is this node's own private key, so the tombstone is
+	// owner-authored and applies immediately on every consumer.
 	PublishTombstone(topic Topic) error
+
+	// PublishObserverTombstone publishes an observer-signed attestation
+	// that the (topic, target) owner is dead. The attestation alone does
+	// NOT evict the target's record — consumers gate on K-of-N distinct
+	// observer attestations accumulated within a corroboration window
+	// before applying the effective tombstone (see DefaultObserverQuorum).
+	// Combined with the v1 anchor-role gate (callers SHOULD only invoke
+	// this from peers whose Role is RoleAnchor), this makes the death-
+	// detection signal resistant to single-node corruption or Sybil
+	// attestation. A wrongly-evicted live peer is auto-restored by the
+	// CRDT once it republishes its own PeerRecord with a higher HLC.
+	PublishObserverTombstone(topic Topic, target NodeID) error
+
+	// SetObserverRoleCheck wires an application-layer trust gate for
+	// observer attestations. The gate is called with the attesting peer's
+	// claimed NodeID and Sig-verified PubKey and must return true only
+	// when the (NodeID, PubKey) binding maps to a trusted observer (e.g.
+	// a known anchor in HSTLES's role_table). Without the gate any peer
+	// can mint attestations; with the gate set, only anchor-owned key
+	// pairs count toward the K-of-N quorum.
+	SetObserverRoleCheck(fn func(observer NodeID, pubKey []byte) bool)
 
 	// SetRole atomically updates this Node's role. Triggers tree-edge
 	// rebalance + topic-publish duty changes. Idempotent.
