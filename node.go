@@ -370,6 +370,15 @@ func (n *nodeImpl) OnTenantChange(fn func(prev, next string)) {
 }
 
 // Role returns the current role.
+// SelfRole satisfies the Node interface — returns the role this node
+// has been configured to play, bypassing the RoleTable's PeerRecord
+// gossip-echo dependency. Equivalent to Role() but exposed on the
+// interface for callers that must do "am I an anchor" checks during
+// the boot window before our own PeerRecord has round-tripped.
+func (n *nodeImpl) SelfRole() Role {
+	return Role(n.role.Load())
+}
+
 func (n *nodeImpl) Role() Role {
 	return Role(n.role.Load())
 }

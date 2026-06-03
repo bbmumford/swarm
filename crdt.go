@@ -61,6 +61,20 @@ type topicStore struct {
 	// for the target's record. Pruned when ObservedAtUnixMs falls outside
 	// observerCorroborationWindow on every Apply.
 	attestations map[NodeID]map[NodeID]Record
+
+	// restoredAtUnixMs[target] = ObservedAtUnixMs high-water-mark from the
+	// moment a live owner record was applied to that target's records[]
+	// slot. Attestations with att.ObservedAtUnixMs <= this value are
+	// stale — they were issued BEFORE the owner re-published — and MUST
+	// be rejected. Without this fence a previously-attestation-evicted
+	// peer that has now re-published can be re-tombstoned by a single
+	// new attestation combined with two replayed pre-restore attestations
+	// (the K-of-N invariant is silently violated; see the adversarial
+	// review concern "Owner re-publish does not fence in-flight
+	// attestations"). The HWM is updated only on owner records (NOT on
+	// observer attestations) so the consumer-local synthesised tombstone
+	// path does not reset it.
+	restoredAtUnixMs map[NodeID]int64
 }
 
 func newRecordStore() *recordStore {
@@ -124,8 +138,9 @@ func (s *recordStore) Apply(r Record) (applied bool, replaced bool) {
 	ts, ok := s.byTopic[r.Topic]
 	if !ok {
 		ts = &topicStore{
-			records:      make(map[NodeID]Record),
-			attestations: make(map[NodeID]map[NodeID]Record),
+			records:          make(map[NodeID]Record),
+			attestations:     make(map[NodeID]map[NodeID]Record),
+			restoredAtUnixMs: make(map[NodeID]int64),
 		}
 		s.byTopic[r.Topic] = ts
 	}
@@ -141,6 +156,15 @@ func (s *recordStore) Apply(r Record) (applied bool, replaced bool) {
 	cur, had := ts.records[r.NodeID]
 	if !had {
 		ts.records[r.NodeID] = r
+		// First-time owner record: stamp the restored-at high-water-mark
+		// so any in-flight attestations that were issued before this
+		// moment are rejected. Without this fence a peer that was
+		// observer-tombstoned and now re-publishes can be re-evicted by
+		// stale pre-restore attestations arriving via gossip late or
+		// via anti-entropy replay.
+		if !r.Tombstone {
+			ts.restoredAtUnixMs[r.NodeID] = s.nowFn().UnixMilli()
+		}
 		return true, false
 	}
 	replaced = true
@@ -151,7 +175,16 @@ func (s *recordStore) Apply(r Record) (applied bool, replaced bool) {
 		// Clear stale attestations for this target so a future death
 		// detection starts from an empty witness set (otherwise a
 		// flapping peer would re-trip the quorum from old attestations).
+		// Also stamp the restored-at high-water-mark so in-flight stale
+		// attestations arriving AFTER this point are rejected by the
+		// attestation gate (delete alone is insufficient — pre-restore
+		// attestations can land in the freshly-empty set and combine
+		// with a single fresh post-restore attestation to satisfy
+		// K-of-N, silently violating the witness invariant).
 		delete(ts.attestations, r.NodeID)
+		if !r.Tombstone {
+			ts.restoredAtUnixMs[r.NodeID] = s.nowFn().UnixMilli()
+		}
 		return true, true
 	}
 	return false, true
@@ -165,6 +198,35 @@ func (s *recordStore) applyAttestationLocked(ts *topicStore, att Record) (applie
 	// observers (or observers whose claimed NodeID does not bind to the
 	// Sig-verified PubKey) when the role check is wired.
 	if s.observerRoleCheck != nil && !s.observerRoleCheck(att.ObserverNodeID, att.PubKey) {
+		return false, false
+	}
+
+	// Forward-skew gate — reject any attestation whose ObservedAtUnixMs is
+	// more than observerForwardSkewBudget ahead of wall-now. Without this
+	// gate, a single observer with a clock skewed forward (or a malicious
+	// anchor passing the role check) can post ObservedAtUnixMs = now+1h
+	// and that value becomes the prune anchor — every honest observer's
+	// in-real-time-window attestation falls outside (newest -
+	// a.ObservedAtUnixMs > winMs) and is pruned, denying quorum
+	// permanently with one message. See adversarial review concern
+	// "Window pruning anchored on attestation timestamps lets a single
+	// skewed/malicious observer deny quorum".
+	nowMs := s.nowFn().UnixMilli()
+	if att.ObservedAtUnixMs > nowMs+observerForwardSkewBudget.Milliseconds() {
+		return false, false
+	}
+
+	// Restored-at high-water-mark gate — reject attestations issued
+	// BEFORE the target last successfully re-published as owner. The
+	// owner-publish path stamps restoredAtUnixMs at publish time; any
+	// attestation whose ObservedAtUnixMs is <= that stamp is stale (it
+	// was issued for the pre-restore lifecycle of the peer) and MUST
+	// NOT be admitted to the witness set. Without this fence a peer
+	// restored from observer-tombstone can be re-evicted by stale
+	// in-flight attestations replayed via anti-entropy or late gossip,
+	// combined with a single fresh post-restore attestation, satisfying
+	// K-of-N while silently violating the witness invariant.
+	if hwm, ok := ts.restoredAtUnixMs[att.NodeID]; ok && att.ObservedAtUnixMs <= hwm {
 		return false, false
 	}
 
@@ -182,7 +244,13 @@ func (s *recordStore) applyAttestationLocked(ts *topicStore, att Record) (applie
 	}
 
 	// Each observer's most-recent attestation supersedes its prior ones.
-	if cur, had := set[att.ObserverNodeID]; had && cur.ObservedAtUnixMs >= att.ObservedAtUnixMs {
+	// Supersede when EITHER ObservedAtUnixMs OR HLC strictly advances —
+	// using ObservedAtUnixMs alone lets an observer "pin" its slot by
+	// re-gossiping the same attestation; honest HLC advances would be
+	// dropped at equal timestamps, masking subsequent fresh attestations
+	// from the same observer.
+	if cur, had := set[att.ObserverNodeID]; had &&
+		att.ObservedAtUnixMs <= cur.ObservedAtUnixMs && att.HLC <= cur.HLC {
 		return false, true
 	}
 	set[att.ObserverNodeID] = att
@@ -190,7 +258,9 @@ func (s *recordStore) applyAttestationLocked(ts *topicStore, att Record) (applie
 	// Prune attestations outside the corroboration window. Window is
 	// anchored on the NEWEST attestation rather than wall-now so cleanly-
 	// gossiped batches that all arrived within W of each other still
-	// count even if a few seconds of delivery lag elapsed.
+	// count even if a few seconds of delivery lag elapsed. The
+	// forward-skew gate above bounds "newest" so it cannot be poisoned
+	// arbitrarily into the future.
 	newest := int64(0)
 	for _, a := range set {
 		if a.ObservedAtUnixMs > newest {
@@ -207,6 +277,14 @@ func (s *recordStore) applyAttestationLocked(ts *topicStore, att Record) (applie
 	// Quorum check — K distinct observers (set keys are observer NodeIDs,
 	// so map size IS distinct-observer count after pruning).
 	if len(set) < s.observerQuorum {
+		// GC the empty set so a target that never crosses quorum doesn't
+		// hold an empty map entry forever. The owner-publish path
+		// already deletes the entire entry on restore, but a never-
+		// crossed quorum that fully prunes (e.g. a single stale
+		// attestation expired) would otherwise leak.
+		if len(set) == 0 {
+			delete(ts.attestations, att.NodeID)
+		}
 		return false, ts.records[att.NodeID].HLC != 0
 	}
 
