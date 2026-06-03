@@ -13,7 +13,8 @@ option go_package = "github.com/bbmumford/swarm/proto/pb";
 // at the transport layer — consumers register typed subscribers per Topic.
 //
 // HLC (hybrid logical clock) gives total order. Sig covers:
-//   topic || node_id || hlc || body || tombstone || pub_key
+//   topic || node_id || hlc || body || tombstone || pub_key ||
+//   observer_node_id || observed_at_unix_ms
 //
 // node_id is an opaque identifier (caller-defined; may be a fingerprint or
 // other non-reversible encoding of pub_key). pub_key is the raw 32-byte
@@ -21,14 +22,31 @@ option go_package = "github.com/bbmumford/swarm/proto/pb";
 // pub_key directly (not against any key derived from node_id). When the
 // caller cares about the node_id ↔ pub_key relationship (e.g. fingerprint
 // scheme), the application layer enforces it on top of sig verification.
+//
+// Observer-tombstone: when tombstone=true AND observer_node_id is non-empty,
+// the record is an attestation signed by observer_node_id (not the owner)
+// that the (topic, node_id) record's owner is dead. PubKey/Sig prove
+// observer_node_id holds the key. Consumers accumulate these attestations
+// and synthesise an effective tombstone only after K-of-N distinct
+// observer_node_id values arrive within a corroboration window — see
+// swarm/crdt.go applyAttestationLocked.
 message Record {
   string topic = 1;        // tenant- and network-scoped topic name
   bytes  node_id = 2;      // opaque origin identifier (application-defined)
   uint64 hlc = 3;          // hybrid logical clock
   bytes  body = 4;         // opaque; topic-typed
   bool   tombstone = 5;    // body should be empty when true
-  bytes  sig = 6;          // Ed25519 over (topic || node_id || hlc || body || tombstone || pub_key)
+  bytes  sig = 6;          // Ed25519 over signableBytes(record); see swarm/sig.go
   bytes  pub_key = 7;      // raw 32-byte Ed25519 public key used to verify sig
+
+  // observer_node_id — when set, this record is an observer-signed
+  // attestation that (topic, node_id) is dead. Empty for owner-signed
+  // records.
+  bytes  observer_node_id = 8;
+  // observed_at_unix_ms — observer's wall-clock at the moment death was
+  // declared. Used by the corroboration-window gate. Zero for
+  // owner-signed records.
+  int64  observed_at_unix_ms = 9;
 }
 
 // Frame is the on-wire envelope for swarm protocol messages.

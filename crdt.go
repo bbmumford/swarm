@@ -6,6 +6,7 @@ package swarm
 import (
 	"sort"
 	"sync"
+	"time"
 )
 
 // recordStore is a per-topic δ-CRDT keyed by (NodeID). Each NodeID slot
@@ -15,35 +16,128 @@ import (
 // The δ-CRDT property: for any two stores A and B, A.merge(B) == B.merge(A).
 // Merge is HLC-max (highest HLC wins; ties broken lexicographically on the
 // signature bytes for determinism).
+//
+// Observer-tombstone (N-of-M witness) extension: when a Record carries
+// IsObserverAttestation() == true it does NOT directly overwrite the
+// target's slot. Instead it accumulates in a per-target attestation set
+// keyed by (target NodeID, observer NodeID). When the set holds at least
+// observerQuorum distinct ObserverNodeIDs whose ObservedAtUnixMs span a
+// window <= observerCorroborationWindow, the store synthesises a local
+// tombstone for the target. The synthesis is consumer-local — each node
+// re-derives convergence from the gossiped attestations it has seen, so
+// the K-of-N decision is eventually consistent across the mesh without
+// requiring a new "consensus" wire record. A live target re-publishing
+// with a higher HLC than any attestation auto-restores via the standard
+// HLC-max path.
 type recordStore struct {
 	mu      sync.RWMutex
 	byTopic map[Topic]*topicStore
+
+	// observerQuorum (K) and observerCorroborationWindow (W) gate the
+	// observer-attestation accumulator. Default to DefaultObserverQuorum
+	// / DefaultObserverCorroborationWindow; tests override via SetQuorum.
+	observerQuorum              int
+	observerCorroborationWindow time.Duration
+
+	// observerRoleCheck — when non-nil, rejects observer attestations
+	// for which this returns false. Receives both the claimed
+	// ObserverNodeID and the Sig-verified PubKey so the gate can bind
+	// PubKey to a known-anchor pubkey (without that bind a Sybil
+	// attacker can claim any NodeID and supply their own keypair).
+	// Wired by HSTLES Library from its role_table; nil for tests
+	// (accept all observers).
+	observerRoleCheck func(observer NodeID, pubKey []byte) bool
+
+	// nowFn — wall clock for attestation-window pruning. Defaults to
+	// time.Now; the deterministic simulator overrides via SetNowFn.
+	nowFn func() time.Time
 }
 
 type topicStore struct {
 	// records[nodeID] = latest record from that node on this topic
 	records map[NodeID]Record
+
+	// attestations[target][observer] = most recent observer attestation
+	// for the target's record. Pruned when ObservedAtUnixMs falls outside
+	// observerCorroborationWindow on every Apply.
+	attestations map[NodeID]map[NodeID]Record
 }
 
 func newRecordStore() *recordStore {
-	return &recordStore{byTopic: make(map[Topic]*topicStore)}
+	return &recordStore{
+		byTopic:                     make(map[Topic]*topicStore),
+		observerQuorum:              DefaultObserverQuorum,
+		observerCorroborationWindow: DefaultObserverCorroborationWindow,
+		nowFn:                       time.Now,
+	}
+}
+
+// SetObserverRoleCheck wires the anchor-role gate (or any other gate) for
+// observer attestations. The gate receives both the claimed
+// ObserverNodeID and the Sig-verified PubKey; it MUST verify the
+// (NodeID, PubKey) binding against application-layer trust state (e.g.
+// the HSTLES role_table) to prevent Sybil. Pass nil to disable the gate
+// (accept all observers — only appropriate for tests).
+func (s *recordStore) SetObserverRoleCheck(fn func(observer NodeID, pubKey []byte) bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.observerRoleCheck = fn
+}
+
+// SetObserverQuorum overrides the K-of-N threshold and corroboration
+// window. K must be >= 1; W must be > 0. Used by tests and by the
+// deterministic simulator.
+func (s *recordStore) SetObserverQuorum(k int, w time.Duration) {
+	if k < 1 || w <= 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.observerQuorum = k
+	s.observerCorroborationWindow = w
+}
+
+// SetNowFn lets the deterministic simulator inject virtual time for the
+// attestation pruning gate. Defaults to time.Now in production.
+func (s *recordStore) SetNowFn(fn func() time.Time) {
+	if fn == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.nowFn = fn
 }
 
 // Apply attempts to merge r into the store. Returns:
-//   - applied: true if the store changed (r was new or strictly newer)
+//   - applied: true if the store changed (r was new or strictly newer, or
+//     an attestation crossed the K-of-N quorum and synthesised a tombstone)
 //   - replaced: true if the slot already had a record (newer or same)
 //
-// Apply assumes r.Sig has already been verified by the caller.
+// Apply assumes r.Sig has already been verified by the caller. For
+// observer attestations (r.IsObserverAttestation()) the caller MUST have
+// verified Sig against the OBSERVER's public key, not the target's —
+// that's the v1 trust gate and the only way to keep Sybil resistance.
 func (s *recordStore) Apply(r Record) (applied bool, replaced bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	ts, ok := s.byTopic[r.Topic]
 	if !ok {
-		ts = &topicStore{records: make(map[NodeID]Record)}
+		ts = &topicStore{
+			records:      make(map[NodeID]Record),
+			attestations: make(map[NodeID]map[NodeID]Record),
+		}
 		s.byTopic[r.Topic] = ts
 	}
 
+	// Observer attestation path — accumulate, prune, then check quorum.
+	if r.IsObserverAttestation() {
+		return s.applyAttestationLocked(ts, r)
+	}
+
+	// Owner-signed record (or classical owner tombstone) — standard
+	// HLC-max CRDT merge. A live owner re-publish with HLC > any
+	// observer-synthesised tombstone auto-restores via this path.
 	cur, had := ts.records[r.NodeID]
 	if !had {
 		ts.records[r.NodeID] = r
@@ -51,12 +145,105 @@ func (s *recordStore) Apply(r Record) (applied bool, replaced bool) {
 	}
 	replaced = true
 
-	// HLC max wins; on tie use signature comparison (stable, deterministic)
 	if r.HLC > cur.HLC || (r.HLC == cur.HLC && sigLess(cur.Sig, r.Sig)) {
 		ts.records[r.NodeID] = r
+		// A fresh owner publish supersedes any synthesised tombstone.
+		// Clear stale attestations for this target so a future death
+		// detection starts from an empty witness set (otherwise a
+		// flapping peer would re-trip the quorum from old attestations).
+		delete(ts.attestations, r.NodeID)
 		return true, true
 	}
 	return false, true
+}
+
+// applyAttestationLocked accumulates an observer attestation and, when
+// K-of-N within W is satisfied, synthesises a tombstone in the standard
+// records slot. Called under s.mu.
+func (s *recordStore) applyAttestationLocked(ts *topicStore, att Record) (applied bool, replaced bool) {
+	// v1 anchor-only trust gate — reject attestations from non-anchor
+	// observers (or observers whose claimed NodeID does not bind to the
+	// Sig-verified PubKey) when the role check is wired.
+	if s.observerRoleCheck != nil && !s.observerRoleCheck(att.ObserverNodeID, att.PubKey) {
+		return false, false
+	}
+
+	// If the target already has a tombstone (owner-emitted or previously
+	// synthesised) with HLC >= this attestation's HLC, the attestation is
+	// redundant. Don't pollute the witness set.
+	if cur, had := ts.records[att.NodeID]; had && cur.Tombstone && cur.HLC >= att.HLC {
+		return false, true
+	}
+
+	set, ok := ts.attestations[att.NodeID]
+	if !ok {
+		set = make(map[NodeID]Record)
+		ts.attestations[att.NodeID] = set
+	}
+
+	// Each observer's most-recent attestation supersedes its prior ones.
+	if cur, had := set[att.ObserverNodeID]; had && cur.ObservedAtUnixMs >= att.ObservedAtUnixMs {
+		return false, true
+	}
+	set[att.ObserverNodeID] = att
+
+	// Prune attestations outside the corroboration window. Window is
+	// anchored on the NEWEST attestation rather than wall-now so cleanly-
+	// gossiped batches that all arrived within W of each other still
+	// count even if a few seconds of delivery lag elapsed.
+	newest := int64(0)
+	for _, a := range set {
+		if a.ObservedAtUnixMs > newest {
+			newest = a.ObservedAtUnixMs
+		}
+	}
+	winMs := s.observerCorroborationWindow.Milliseconds()
+	for obs, a := range set {
+		if newest-a.ObservedAtUnixMs > winMs {
+			delete(set, obs)
+		}
+	}
+
+	// Quorum check — K distinct observers (set keys are observer NodeIDs,
+	// so map size IS distinct-observer count after pruning).
+	if len(set) < s.observerQuorum {
+		return false, ts.records[att.NodeID].HLC != 0
+	}
+
+	// Synthesise the tombstone. HLC = max(attestation HLCs) + 1 so it
+	// beats every contributing attestation in HLC-max comparisons and
+	// any future live publish from the target needs HLC > this to
+	// restore (which is automatic given the target's HLC monotonically
+	// increases per-node from time-of-publish).
+	maxHLC := uint64(0)
+	for _, a := range set {
+		if a.HLC > maxHLC {
+			maxHLC = a.HLC
+		}
+	}
+	synth := Record{
+		Topic:     att.Topic,
+		NodeID:    att.NodeID,
+		HLC:       maxHLC + 1,
+		Tombstone: true,
+		// PubKey/Sig left empty: this record is consumer-local; it is
+		// never re-broadcast (the contributing attestations are what
+		// gossip carries). Downstream callers MUST gate any rebroadcast
+		// on Sig non-empty; today only deliverToSubs reads the slot for
+		// subscriber dispatch and does not re-emit on the wire.
+	}
+
+	cur, had := ts.records[att.NodeID]
+	if !had || synth.HLC > cur.HLC {
+		ts.records[att.NodeID] = synth
+		// Keep the attestation set around: a target that re-publishes
+		// MUST cross synth.HLC to restore; the set's role is fully
+		// served once synth is recorded, but it's harmless to retain
+		// (and cheap to drop on next live publish via Apply's
+		// delete-on-overwrite).
+		return true, had
+	}
+	return false, had
 }
 
 // Get returns the current record for (topic, node) if any.
