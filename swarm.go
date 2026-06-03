@@ -131,9 +131,19 @@ type Config struct {
 // quorum at all); production values are tuned so a single rogue anchor
 // cannot evict a live peer, but K live anchors observing the same death
 // converge within one corroboration window.
+//
+// observerForwardSkewBudget caps how far into the future an attestation's
+// ObservedAtUnixMs is allowed to be relative to the receiver's wall
+// clock. The prune window is anchored on the NEWEST attestation in the
+// set; without a forward-skew bound a single rogue observer (or one
+// with a forward-skewed clock) could post ObservedAtUnixMs = now + 1h
+// and make that the prune anchor, evicting every honest in-window
+// attestation. 2x the corroboration window leaves room for legitimate
+// clock skew (10 min default) while still bounding the attack.
 const (
 	DefaultObserverQuorum              = 2
 	DefaultObserverCorroborationWindow = 5 * time.Minute
+	observerForwardSkewBudget          = 2 * DefaultObserverCorroborationWindow
 )
 
 // PerPeerConfig captures per-peer adaptive state. Returned by Config.PerPeerConfig.
@@ -210,6 +220,14 @@ type Node interface {
 	// SetRole atomically updates this Node's role. Triggers tree-edge
 	// rebalance + topic-publish duty changes. Idempotent.
 	SetRole(role Role) error
+
+	// SelfRole returns the role this Node has been configured to play.
+	// Bypasses the RoleTable (which depends on this node's own
+	// PeerRecord having round-tripped via gossip). Use this for any
+	// "am I an anchor" check that must succeed during the boot window
+	// before the first PeerRecord gossip echo arrives. Returns RoleLeaf
+	// before any SetRole call (the zero-value default).
+	SelfRole() Role
 
 	// SetTenant rebinds this Node to a tenant. Pre-tenant records are
 	// tombstoned; self records republish under the tenant-scoped topic.
