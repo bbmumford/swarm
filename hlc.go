@@ -54,24 +54,41 @@ func (h *HLC) Now() uint64 {
 // Observe updates the HLC after seeing a remote timestamp. Ensures local
 // future stamps are strictly greater than the observed value.
 func (h *HLC) Observe(remote uint64) {
+	h.observeAt(remote, time.Now().UnixMilli())
+}
+
+// observeAt is Observe with the wall clock injected (nowMs), so the
+// forward-skew clamp is testable without stubbing time.
+//
+// The remote wall component is only allowed to advance the local clock when
+// it is within observerForwardSkewBudget of nowMs. A peer that gossips a
+// far-future wall time — malicious, or badly clock-skewed — must not ratchet
+// the local HLC permanently forward: once the wall component is pushed years
+// ahead, Now() can never advance the wall again (now stays below it), so
+// every subsequent stamp only bumps the 16-bit counter, which silently wraps
+// after 65536 events in the same wall-millisecond. Gating the remote against
+// the same forward-skew budget the attestation path uses (crdt.go) closes
+// that vector while still tolerating legitimate cross-region clock skew.
+func (h *HLC) observeAt(remote uint64, nowMs int64) {
+	skewMs := uint64(observerForwardSkewBudget.Milliseconds())
+	nowWall := uint64(nowMs)
 	for {
 		cur := h.state.Load()
 		curWall, curCtr := unpackHLC(cur)
 		remoteWall, remoteCtr := unpackHLC(remote)
-		nowWall := uint64(time.Now().UnixMilli())
 
-		// Pick max of (cur, remote, now)
+		// Pick max of (cur, now) and — only when in budget — remote.
 		maxWall := curWall
 		maxCtr := curCtr
-		if remoteWall > maxWall || (remoteWall == maxWall && remoteCtr > maxCtr) {
-			maxWall = remoteWall
-			maxCtr = remoteCtr
+		if remoteWall <= nowWall+skewMs {
+			if remoteWall > maxWall || (remoteWall == maxWall && remoteCtr > maxCtr) {
+				maxWall = remoteWall
+				maxCtr = remoteCtr
+			}
 		}
 		if nowWall > maxWall {
 			maxWall = nowWall
 			maxCtr = 0
-		} else if nowWall == maxWall {
-			// Counter stays as max
 		}
 		// We don't bump counter here — that's Now()'s job.
 
