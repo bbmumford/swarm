@@ -4,6 +4,7 @@
 package swarm
 
 import (
+	"sync"
 	"testing"
 	"time"
 )
@@ -42,9 +43,76 @@ func TestHLC_Observe_RejectsFarFutureWall(t *testing.T) {
 
 	h.observeAt(packHLC(farFuture, 0), nowMs)
 
+	// The far-future remote is rejected entirely, so the clock stays at now.
 	gotWall, _ := Decompose(h.state.Load())
-	if gotWall > uint64(nowMs)+uint64(observerForwardSkewBudget.Milliseconds()) {
-		t.Fatalf("far-future remote ratcheted the HLC: wall=%d, now=%d", gotWall, nowMs)
+	if gotWall != uint64(nowMs) {
+		t.Fatalf("far-future remote must be rejected (clock stays at now): wall=%d, now=%d", gotWall, nowMs)
+	}
+}
+
+// TestHLC_Observe_BudgetBoundary pins the inclusive `<=` budget edge: a remote
+// exactly at now+budget is accepted, one millisecond past it is rejected.
+func TestHLC_Observe_BudgetBoundary(t *testing.T) {
+	const nowMs int64 = 1_700_000_000_000
+	budget := uint64(observerForwardSkewBudget.Milliseconds())
+
+	atEdge := hlcAt(nowMs)
+	atEdge.observeAt(packHLC(uint64(nowMs)+budget, 0), nowMs)
+	if w, _ := Decompose(atEdge.state.Load()); w != uint64(nowMs)+budget {
+		t.Fatalf("remote exactly at the budget edge should be accepted: got %d, want %d", w, uint64(nowMs)+budget)
+	}
+
+	pastEdge := hlcAt(nowMs)
+	pastEdge.observeAt(packHLC(uint64(nowMs)+budget+1, 0), nowMs)
+	if w, _ := Decompose(pastEdge.state.Load()); w != uint64(nowMs) {
+		t.Fatalf("remote one ms past the budget should be rejected: got %d, want %d", w, nowMs)
+	}
+}
+
+// TestHLC_Observe_NeverMovesBackward confirms the monotonic invariant: an
+// already-future local wall (a clock that jumped forward then back, or a
+// pre-clamp state) is preserved — Observe gates the remote but never pulls the
+// clock backward, which would let Now() re-issue used timestamps.
+func TestHLC_Observe_NeverMovesBackward(t *testing.T) {
+	const nowMs int64 = 1_700_000_000_000
+	future := uint64(nowMs) + uint64((24 * time.Hour).Milliseconds())
+	h := hlcAt(int64(future))
+
+	h.observeAt(packHLC(uint64(nowMs)+1000, 0), nowMs) // in-budget remote + now, both below cur
+
+	if w, _ := Decompose(h.state.Load()); w != future {
+		t.Fatalf("Observe must not move the clock backward: got %d, want %d", w, future)
+	}
+}
+
+// TestHLC_ConcurrentObserveAndNow makes the -race run meaningful: many
+// goroutines hammer Observe + Now concurrently, exercising the CAS retry path.
+// Afterwards Now() must still advance monotonically. Run with -race.
+func TestHLC_ConcurrentObserveAndNow(t *testing.T) {
+	h := NewHLC()
+	var wg sync.WaitGroup
+	for g := 0; g < 16; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 5000; i++ {
+				if i%2 == 0 {
+					h.Observe(h.Now())
+				} else {
+					_ = h.Now()
+				}
+			}
+		}()
+	}
+	wg.Wait()
+
+	prev := h.Now()
+	for i := 0; i < 100; i++ {
+		n := h.Now()
+		if n <= prev {
+			t.Fatalf("Now not monotonic after contention: %d then %d", prev, n)
+		}
+		prev = n
 	}
 }
 
