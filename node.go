@@ -281,27 +281,25 @@ func (n *nodeImpl) PublishObserverTombstone(topic Topic, target NodeID) error {
 		ObservedAtUnixMs: now.UnixMilli(),
 	}
 	signRecord(&r, n.priv)
-	n.plum.Publish(r)
 
-	// Apply our own attestation through the SAME quorum gate every remote
-	// node uses, instead of handing it straight to subscribers.
-	//
-	// This node's attestation is ONE WITNESS, NOT A VERDICT. Delivering it
-	// locally without Apply made the emitter K=1 while every peer receiving it
-	// via plumtrees correctly waited for K distinct observers — breaking the
-	// property stated on Config: "a single rogue anchor cannot evict a live
-	// peer". Consumers bridge this topic directly into a directory (HSTLES
-	// lad_reach_bridge), so on the emitting anchor one un-corroborated
-	// attestation evicted a live peer's records.
-	//
-	// Apply returns applied=true only once K distinct observers corroborate
-	// within the window, so the emitter converges exactly like a peer — and
-	// its own witness still counts toward the quorum it no longer bypasses.
-	// (The owner path, PublishTombstone, stays K=1 by design: a node signing
-	// its own death needs no corroboration.)
+	// Accumulate our own attestation locally and deliver ONLY if it crosses
+	// quorum here — this node's attestation is ONE WITNESS, NOT A VERDICT.
+	// Delivering it unconditionally would make the emitter K=1 while every peer
+	// receiving it via plumtrees correctly waits for K distinct observers,
+	// breaking the property stated on Config: "a single rogue anchor cannot
+	// evict a live peer". (The owner path, PublishTombstone, stays K=1 by
+	// design: a node signing its own death needs no corroboration.)
 	if applied, _ := n.store.Apply(r); applied {
 		n.deliverToSubs(r)
 	}
+
+	// Broadcast unconditionally — NOT through Publish. Publish gates the send on
+	// store.Apply returning applied=true, but an attestation below quorum
+	// returns applied=false, so the first attestation of any target (all a lone
+	// anchor can produce) would be applied locally and never sent. The whole
+	// point of an attestation is to reach OTHER observers so THEY can count it
+	// toward quorum; it must go on the wire regardless of local quorum state.
+	n.plum.Broadcast(r)
 	return nil
 }
 
