@@ -98,6 +98,24 @@ func (e *plumtreesEngine) Publish(r Record) {
 	e.lazyPushToNonTreeEdges(r)
 }
 
+// Broadcast pushes r to peers WITHOUT the store.Apply gate that Publish uses.
+//
+// Publish couples "did applying this change the store?" with "is this worth
+// sending?" — correct for OverwriteMerge records, where applied=false means "I
+// already hold this or newer, don't echo it". It is WRONG for an observer
+// attestation: Apply returns applied=false for every attestation below quorum,
+// yet that attestation is exactly what must reach OTHER observers so they can
+// count it toward THEIR quorum. Routed through Publish, the first attestation of
+// any target — the only kind a lone anchor can produce — was applied locally and
+// never sent, so no target ever accumulated K distinct observers on any node.
+//
+// The caller owns the decision that r is novel and worth propagating. Use this
+// only for records where local-apply status must not gate the broadcast.
+func (e *plumtreesEngine) Broadcast(r Record) {
+	e.eagerPushToTreeEdges(r)
+	e.lazyPushToNonTreeEdges(r)
+}
+
 // ReceiveFrame is the entry point from the transport layer. It dispatches
 // to the appropriate handler based on the Frame's kind.
 func (e *plumtreesEngine) ReceiveFrame(from NodeID, raw []byte) error {
