@@ -229,6 +229,27 @@ type Node interface {
 	// before any SetRole call (the zero-value default).
 	SelfRole() Role
 
+	// Get returns the current record for (topic, node) and whether one
+	// exists. This is the production read API over the convergence store
+	// — a stable, exported alternative to the test-only InternalStore.
+	// A tombstoned or expired record is reported as not-present.
+	Get(topic Topic, node NodeID) (Record, bool)
+
+	// TopicRecords returns a snapshot of every live record on a topic.
+	// Consumers build typed, tenant-scoped projections (members, reach,
+	// roles) on top of this — it is the query surface that lets the swarm
+	// store back a directory the way ledger's DirectoryCache used to.
+	TopicRecords(topic Topic) []Record
+
+	// Topics returns every topic the store currently holds records for.
+	Topics() []Topic
+
+	// SetObserverQuorum tunes the observer-tombstone gate: k distinct
+	// anchors must corroborate a death within window w before it
+	// synthesises a tombstone. k must be >= 2 (below that is no quorum).
+	// Defaults are DefaultObserverQuorum / DefaultObserverCorroborationWindow.
+	SetObserverQuorum(k int, w time.Duration)
+
 	// SetTenant rebinds this Node to a tenant. Pre-tenant records are
 	// tombstoned; self records republish under the tenant-scoped topic.
 	SetTenant(tenantID string) error

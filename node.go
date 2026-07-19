@@ -400,6 +400,27 @@ func (n *nodeImpl) Role() Role {
 	return Role(n.role.Load())
 }
 
+// Get returns the current record for (topic, node). Production read API over
+// the convergence store; delegates to the same store the gossip path applies to.
+func (n *nodeImpl) Get(topic Topic, node NodeID) (Record, bool) {
+	return n.store.Get(topic, node)
+}
+
+// TopicRecords returns a snapshot of every live record on a topic.
+func (n *nodeImpl) TopicRecords(topic Topic) []Record {
+	return n.store.TopicRecords(topic)
+}
+
+// Topics returns every topic the store currently holds records for.
+func (n *nodeImpl) Topics() []Topic {
+	return n.store.Topics()
+}
+
+// SetObserverQuorum tunes the K-of-N observer-tombstone gate.
+func (n *nodeImpl) SetObserverQuorum(k int, w time.Duration) {
+	n.store.SetObserverQuorum(k, w)
+}
+
 // Tenant returns the current tenant ID.
 func (n *nodeImpl) Tenant() string {
 	v, _ := n.tenant.Load().(string)
