@@ -34,9 +34,18 @@ type plumtreesEngine struct {
 
 	// missingIHaves tracks records announced via IHave but not yet received
 	// via eager push. After grace period, we GRAFT to the announcer.
+	// Bounded by maxPendingIHaves (drop-new beyond the cap — anti-entropy
+	// recovers anything a dropped announcement covered); entries are
+	// expired by processGrafts after ihaveEntryTTL so grafted-but-never-
+	// answered entries cannot accumulate forever.
 	missingMu     sync.Mutex
 	missingIHaves map[ihaveKey]*ihaveEntry
 	graftDelay    time.Duration
+	maxIHaves     int
+
+	// gate applies the inbound admission checks (size/skew/binding/trust)
+	// to records arriving via eager push. Set via SetInboundGate.
+	gate *inboundGate
 
 	paused    atomic.Bool
 	merkle    *merkleEngine
@@ -84,7 +93,45 @@ func newPlumtrees(localID NodeID, store *recordStore, peers *peerTable, tport Tr
 		nowFn:         nowFn,
 		missingIHaves: make(map[ihaveKey]*ihaveEntry),
 		graftDelay:    graftDelay,
+		maxIHaves:     4096,
 	}
+}
+
+// ihaveEntryTTL bounds how long a missing-IHave entry (grafted or not) may
+// live before processGrafts expires it. Long enough for a graft round-trip
+// plus retries; short enough that a flood or an unanswered graft cannot
+// grow the tracker without bound.
+const ihaveEntryTTL = 30 * time.Second
+
+// SetInboundGate installs the shared pre-store admission gate.
+func (e *plumtreesEngine) SetInboundGate(g *inboundGate) { e.gate = g }
+
+// SetMaxPendingIHaves overrides the missing-IHave tracker cap (0 keeps the
+// default).
+func (e *plumtreesEngine) SetMaxPendingIHaves(n int) {
+	if n > 0 {
+		e.maxIHaves = n
+	}
+}
+
+// maxTreeEdges bounds inbound-driven tree-edge promotion (graft/eager).
+// Self-initiated promotion is already bounded by treeDeg in bestTreeEdges;
+// this cap stops a peer set from graft-flooding the edge set into
+// all-peers fan-out. 4× degree leaves plumtree healing room.
+func (e *plumtreesEngine) maxTreeEdges() int { return e.treeDeg * 4 }
+
+// promoteTreeEdgeBounded promotes from to a tree edge unless the bound is
+// reached (already-edge peers always stay).
+func (e *plumtreesEngine) promoteTreeEdgeBounded(from NodeID) {
+	for _, edge := range e.peers.TreeEdges() {
+		if edge == from {
+			return
+		}
+	}
+	if len(e.peers.TreeEdges()) >= e.maxTreeEdges() {
+		return
+	}
+	e.peers.SetTreeEdge(from, true)
 }
 
 // Publish broadcasts a freshly-signed Record. Called by Node.Publish after
@@ -202,10 +249,46 @@ func (e *plumtreesEngine) handleEager(from NodeID, ep *pb.EagerPush) error {
 		return nil // drop malformed/forged records silently
 	}
 
+	// Pre-store admission: size / clock-skew / key-binding / trust. Runs
+	// after signature verification, before anything can touch the store
+	// or the local clock.
+	if e.gate != nil && e.gate.Admit(r) != nil {
+		return nil
+	}
+
 	// Observe HLC for future stamps
 	e.hlc.Observe(r.HLC)
 
-	applied, replaced := e.store.Apply(r)
+	applied, replaced, accumulated := e.store.ApplyExt(r)
+
+	// Observer-attestation relay: a below-quorum attestation returns
+	// applied=false yet MUST keep travelling — every observer that fails
+	// to see it is an observer that can never count it toward quorum, and
+	// on sparse topologies one hop from the emitter reaches almost
+	// nobody. Relay exactly the FRESH ones (accumulated=true): supersede
+	// dedup in the store guarantees each attestation forwards at most
+	// once per node, so the flood terminates.
+	//
+	// The relay must run bestTreeEdges (which PROMOTES up to the degree
+	// budget) rather than raw eagerForward: a relay node with no tree
+	// edges yet would otherwise forward to nobody, and the lazy path
+	// cannot recover attestations — handleGraft serves record slots, and
+	// attestations live in the witness sets, not the slots.
+	if !applied && accumulated && r.IsObserverAttestation() {
+		if ep.Ttl > 1 {
+			frame, err := encodeFrame(frameEagerPush(r, ep.Ttl-1))
+			if err == nil {
+				for _, edge := range e.bestTreeEdges() {
+					if edge == from {
+						continue
+					}
+					_ = e.tport.Send(edge, frame)
+				}
+			}
+		}
+		return nil
+	}
+
 	if !applied && replaced {
 		// We had a newer or equal record. The sender is a redundant
 		// tree edge — prune them for this topic.
@@ -216,8 +299,10 @@ func (e *plumtreesEngine) handleEager(from NodeID, ep *pb.EagerPush) error {
 		return nil
 	}
 
-	// Promote sender to tree edge if not already (Plumtrees: first-source wins)
-	e.peers.SetTreeEdge(from, true)
+	// Promote sender to tree edge if not already (Plumtrees: first-source
+	// wins), bounded so inbound traffic cannot inflate the edge set into
+	// all-peers fan-out.
+	e.promoteTreeEdgeBounded(from)
 
 	// Clear any pending IHave for this record
 	e.missingMu.Lock()
@@ -245,7 +330,10 @@ func (e *plumtreesEngine) handleEager(from NodeID, ep *pb.EagerPush) error {
 func (e *plumtreesEngine) handleIHave(from NodeID, ih *pb.IHave) error {
 	topic := Topic(ih.Topic)
 	nodeID := NodeID(ih.NodeId)
-	if cur, ok := e.store.Get(topic, nodeID); ok && cur.HLC >= ih.Hlc {
+	// getRaw: a tombstoned slot still counts as "have" — the public Get
+	// hides tombstones, which would make us re-graft records our
+	// tombstone already supersedes.
+	if cur, ok := e.store.getRaw(topic, nodeID); ok && cur.HLC >= ih.Hlc {
 		return nil
 	}
 
@@ -257,6 +345,11 @@ func (e *plumtreesEngine) handleIHave(from NodeID, ih *pb.IHave) error {
 	if existing, ok := e.missingIHaves[key]; ok {
 		// Already tracked; first announcer keeps priority
 		_ = existing
+	} else if len(e.missingIHaves) >= e.maxIHaves {
+		// Cap: an IHave flood (distinct unsigned announcements are free
+		// to fabricate) must not grow this map without bound. Dropped
+		// announcements cost nothing durable — merkle anti-entropy
+		// recovers any real record they covered.
 	} else {
 		e.missingIHaves[key] = &ihaveEntry{
 			announcer: from,
@@ -272,11 +365,17 @@ func (e *plumtreesEngine) handleIHave(from NodeID, ih *pb.IHave) error {
 // edge for a specific record they're missing. We promote them + send
 // the record they want via eager push.
 func (e *plumtreesEngine) handleGraft(from NodeID, g *pb.Graft) error {
-	e.peers.SetTreeEdge(from, true)
+	// Bounded promotion: an unauthenticated GRAFT must not be a free
+	// ticket into unbounded eager fan-out.
+	e.promoteTreeEdgeBounded(from)
 	topic := Topic(g.Topic)
 	nodeID := NodeID(g.NodeId)
-	r, ok := e.store.Get(topic, nodeID)
-	if !ok {
+	// getRaw: tombstones must be serveable — a grafting peer asking about
+	// a dead node needs the tombstone, not silence.
+	r, ok := e.store.getRaw(topic, nodeID)
+	if !ok || len(r.Sig) == 0 {
+		// Nothing stored, or a consumer-local synthesised tombstone —
+		// synth records never travel (receivers cannot verify them).
 		return nil
 	}
 	frame, _ := encodeFrame(frameEagerPush(r, e.eagerTTL))
@@ -310,6 +409,13 @@ func (e *plumtreesEngine) processGrafts(now time.Time) {
 	defer e.missingMu.Unlock()
 
 	for key, entry := range e.missingIHaves {
+		// Expire stale entries — grafted-but-never-answered entries
+		// previously lived forever, an unbounded leak under churn.
+		// Anti-entropy owns recovery beyond this window.
+		if now.Sub(entry.seenAt) > ihaveEntryTTL {
+			delete(e.missingIHaves, key)
+			continue
+		}
 		if entry.grafted {
 			continue
 		}

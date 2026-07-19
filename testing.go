@@ -20,14 +20,22 @@ type StoreView interface {
 // Returns nil if n is not a *nodeImpl.
 //
 // Intended for the simulator's convergence assertion and for unit tests.
-// Production code MUST NOT depend on this.
+// Production code MUST NOT depend on this. Unlike the public Node.Get/
+// TopicRecords (which honour the documented contract and hide tombstones),
+// this view is RAW: tombstones and synthesised records are visible —
+// exactly what convergence assertions need.
 func InternalStore(n Node) StoreView {
 	impl, ok := n.(*nodeImpl)
 	if !ok {
 		return nil
 	}
-	return impl.store
+	return rawStoreView{impl.store}
 }
 
-// ---------- recordStore satisfies StoreView ----------
-// (Topics, TopicRecords, TopicCount, Count already defined in crdt.go)
+// rawStoreView adapts recordStore with tombstone-inclusive reads.
+type rawStoreView struct{ s *recordStore }
+
+func (v rawStoreView) Topics() []Topic                    { return v.s.Topics() }
+func (v rawStoreView) TopicRecords(topic Topic) []Record  { return v.s.topicRecordsAll(topic) }
+func (v rawStoreView) TopicCount(topic Topic) int         { return v.s.TopicCount(topic) }
+func (v rawStoreView) Count() int                         { return v.s.Count() }

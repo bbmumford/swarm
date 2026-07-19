@@ -28,11 +28,20 @@ type nodeImpl struct {
 	subs   map[Topic]map[uint64]Subscriber
 	subSeq atomic.Uint64
 
-	// Lifecycle
+	// Lifecycle. lifeMu guards startCtx/startCancel handoff between
+	// Start (writer) and Stop/engine goroutines (readers).
+	lifeMu      sync.Mutex
 	startCtx    context.Context
 	startCancel context.CancelFunc
+	started     atomic.Bool
+	wired       atomic.Bool
 	stopped     atomic.Bool
 	paused      atomic.Bool
+	wg          sync.WaitGroup
+
+	// gate runs every inbound record through size/skew/binding/trust
+	// checks before it can reach the store. Built in Wire from Config.
+	gate *inboundGate
 
 	// Atomic role/tenant
 	role   atomic.Uint32 // Role
@@ -79,6 +88,10 @@ func New(cfg Config) (Node, error) {
 		onPaused:  cfg.OnPaused,
 		onResumed: cfg.OnResumed,
 	}
+	n.store.setCaps(cfg.MaxTopics, cfg.MaxRecordsPerTopic, cfg.MaxAttestationsPerTarget)
+	if cfg.NowFn != nil {
+		n.store.SetNowFn(cfg.NowFn)
+	}
 	n.tenant.Store("")
 	return n, nil
 }
@@ -91,13 +104,22 @@ func Wire(n Node, t Transport) error {
 	if !ok {
 		return ErrInvalidConfig
 	}
+	if impl.wired.Swap(true) {
+		// Re-wiring silently discards plumtree/merkle/graft state and
+		// leaves the previous transport's callbacks dangling — refuse.
+		return ErrAlreadyWired
+	}
 	impl.tport = t
+	impl.gate = newInboundGate(impl.cfg)
 
 	impl.plum = newPlumtrees(impl.id, impl.store, impl.peers, t, impl.hlc, impl.cfg.TreeDegree, impl.cfg.NowFn, impl.cfg.GraftDelay)
+	impl.plum.SetInboundGate(impl.gate)
+	impl.plum.SetMaxPendingIHaves(impl.cfg.MaxPendingIHaves)
 	impl.merkle = newMerkle(impl.store, impl.peers, t, impl.cfg.NowFn, impl.cfg.MerkleProbeInterval)
+	impl.merkle.SetInboundGate(impl.gate)
 	impl.plum.SetMerkle(impl.merkle)
-	impl.plum.SetOnApplied(impl.deliverToSubs)
-	impl.merkle.SetOnApplied(impl.deliverToSubs)
+	impl.plum.SetOnApplied(impl.recordAccepted)
+	impl.merkle.SetOnApplied(impl.recordAccepted)
 	impl.content = newContentTopic(impl)
 	impl.plum.SetFetchHandlers(impl.content.handleFetchRequest, impl.content.handleFetchResponse)
 
@@ -128,14 +150,30 @@ func (n *nodeImpl) Start(ctx context.Context) error {
 	if n.tport == nil {
 		return ErrInvalidConfig
 	}
-	n.startCtx, n.startCancel = context.WithCancel(ctx)
+	if n.stopped.Load() {
+		return ErrStopped
+	}
+	if n.started.Swap(true) {
+		// A second Start would spawn a duplicate ticker goroutine and
+		// orphan the first invocation's cancel func — refuse.
+		return ErrAlreadyStarted
+	}
+	startCtx, startCancel := context.WithCancel(ctx)
+	n.lifeMu.Lock()
+	n.startCtx, n.startCancel = startCtx, startCancel
+	n.lifeMu.Unlock()
 
 	if !n.cfg.DisableBackgroundTicker {
-		// Background tick: drive Plumtrees graft timer + keepalives.
-		go n.runTickLoop()
+		// Background tick: drive Plumtrees graft timer, Merkle
+		// anti-entropy probes, and TTL reaping.
+		n.wg.Add(1)
+		go func() {
+			defer n.wg.Done()
+			n.runTickLoop(startCtx)
+		}()
 	}
 
-	<-n.startCtx.Done()
+	<-startCtx.Done()
 	return nil
 }
 
@@ -169,11 +207,19 @@ func (n *nodeImpl) ProbePeer(peer NodeID) {
 
 func (n *nodeImpl) Stop() error {
 	if !n.stopped.CompareAndSwap(false, true) {
-		return ErrStopped
+		// Idempotent per the interface contract: a second Stop is a
+		// no-op success, not an error.
+		return nil
 	}
-	if n.startCancel != nil {
-		n.startCancel()
+	n.lifeMu.Lock()
+	cancel := n.startCancel
+	n.lifeMu.Unlock()
+	if cancel != nil {
+		cancel()
 	}
+	// Join the ticker goroutine so Stop returning means no engine work is
+	// still in flight (Wire's OnReceive gate handles transport callbacks).
+	n.wg.Wait()
 	return nil
 }
 
@@ -183,17 +229,27 @@ func (n *nodeImpl) Subscribe(topic Topic, sub Subscriber) (Unsubscribe, error) {
 	}
 	id := n.subSeq.Add(1)
 
+	// Gap-free replay: the subscriber is registered BEFORE the snapshot is
+	// taken (so no record can slip between snapshot and registration), but
+	// live deliveries are queued behind a gate until replay completes, then
+	// flushed with per-slot HLC dedup. The subscriber therefore sees every
+	// record exactly once, replay-then-live, with no interleaving.
+	gate := &subGate{inner: sub, replaying: true}
 	n.subsMu.Lock()
 	if n.subs[topic] == nil {
 		n.subs[topic] = make(map[uint64]Subscriber)
 	}
-	n.subs[topic][id] = sub
+	n.subs[topic][id] = gate.deliver
 	n.subsMu.Unlock()
 
-	// Deliver any already-stored records for this topic to the new subscriber.
-	for _, r := range n.store.TopicRecords(topic) {
-		_ = sub(r)
+	// Replay the current state — including tombstones: a late subscriber
+	// must learn about deaths, not just survivors.
+	replayed := make(map[NodeID]uint64)
+	for _, r := range n.store.topicRecordsAll(topic) {
+		replayed[r.NodeID] = r.HLC
+		_ = sub(cloneRecord(r))
 	}
+	gate.finishReplay(replayed)
 
 	return func() {
 		n.subsMu.Lock()
@@ -202,6 +258,41 @@ func (n *nodeImpl) Subscribe(topic Topic, sub Subscriber) (Unsubscribe, error) {
 			delete(subs, id)
 		}
 	}, nil
+}
+
+// subGate serialises a subscriber's replay-then-live transition.
+type subGate struct {
+	mu        sync.Mutex
+	inner     Subscriber
+	replaying bool
+	queue     []Record
+}
+
+func (g *subGate) deliver(r Record) error {
+	g.mu.Lock()
+	if g.replaying {
+		g.queue = append(g.queue, r)
+		g.mu.Unlock()
+		return nil
+	}
+	g.mu.Unlock()
+	return g.inner(r)
+}
+
+// finishReplay flushes live records queued during replay, skipping any
+// already covered by the replayed snapshot (same slot, HLC not newer).
+func (g *subGate) finishReplay(replayed map[NodeID]uint64) {
+	g.mu.Lock()
+	queue := g.queue
+	g.queue = nil
+	g.replaying = false
+	g.mu.Unlock()
+	for _, r := range queue {
+		if hlc, ok := replayed[r.NodeID]; ok && r.HLC <= hlc {
+			continue
+		}
+		_ = g.inner(r)
+	}
 }
 
 func (n *nodeImpl) Publish(topic Topic, body []byte) error {
@@ -221,13 +312,16 @@ func (n *nodeImpl) Publish(topic Topic, body []byte) error {
 		Topic:  topic,
 		NodeID: n.id,
 		HLC:    n.hlc.Now(),
-		Body:   body,
+		// Deep-copy: the store, the wire encoder, and every subscriber
+		// share this slice from here on — a caller mutating its body
+		// buffer after Publish must not corrupt any of them.
+		Body: append([]byte(nil), body...),
 	}
 	signRecord(&r, n.priv)
 	n.plum.Publish(r)
 
-	// Notify local subscribers
-	n.deliverToSubs(r)
+	// Notify local subscribers + the accepted-change stream.
+	n.recordAccepted(r)
 	return nil
 }
 
@@ -243,7 +337,7 @@ func (n *nodeImpl) PublishTombstone(topic Topic) error {
 	}
 	signRecord(&r, n.priv)
 	n.plum.Publish(r)
-	n.deliverToSubs(r)
+	n.recordAccepted(r)
 	return nil
 }
 
@@ -290,7 +384,7 @@ func (n *nodeImpl) PublishObserverTombstone(topic Topic, target NodeID) error {
 	// evict a live peer". (The owner path, PublishTombstone, stays K=1 by
 	// design: a node signing its own death needs no corroboration.)
 	if applied, _ := n.store.Apply(r); applied {
-		n.deliverToSubs(r)
+		n.recordAccepted(r)
 	}
 
 	// Broadcast unconditionally — NOT through Publish. Publish gates the send on
@@ -357,9 +451,18 @@ func (n *nodeImpl) SetTenant(tenantID string) error {
 			Tombstone: true,
 		}
 		signRecord(&tomb, n.priv)
-		n.store.Apply(tomb)
+		// Apply locally, then Broadcast — NOT Publish. Publish gates the
+		// send on its own store.Apply returning applied=true; with the
+		// tombstone pre-applied here, that second Apply is a no-op
+		// (identical HLC + deterministic Ed25519 sig), so Publish
+		// returned before pushing and the tenant-rebind tombstone NEVER
+		// reached the wire. Broadcast is the same fix the observer
+		// attestation path required, for the same double-apply reason.
+		if applied, _ := n.store.Apply(tomb); applied {
+			n.recordAccepted(tomb)
+		}
 		if n.plum != nil {
-			n.plum.Publish(tomb)
+			n.plum.Broadcast(tomb)
 		}
 	}
 
@@ -469,19 +572,46 @@ func (n *nodeImpl) ContentTopic() ContentTopic {
 
 // ---------- internal ----------
 
-func (n *nodeImpl) runTickLoop() {
+func (n *nodeImpl) runTickLoop(ctx context.Context) {
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
+	var lastReap time.Time
 	for {
 		select {
-		case <-n.startCtx.Done():
+		case <-ctx.Done():
 			return
 		case t := <-ticker.C:
 			if n.plum != nil {
 				n.plum.Tick(t)
 			}
+			// Drive Merkle anti-entropy from the production ticker too.
+			// Previously only the simulator's Node.Tick called
+			// merkle.Tick — in production the periodic drift-recovery
+			// loop NEVER ran; reconciliation happened only on session
+			// join. merkleEngine.Tick self-paces per topic via
+			// MerkleProbeInterval, so a 50ms driver costs nothing
+			// between due probes.
+			if n.merkle != nil {
+				n.merkle.Tick()
+			}
+			if n.cfg.TopicTTL != nil && t.Sub(lastReap) >= 30*time.Second {
+				lastReap = t
+				n.store.reapExpired(t.UnixMilli(), n.cfg.TopicTTL)
+			}
 		}
 	}
+}
+
+// recordAccepted fans one accepted store change out to the OnAccepted
+// stream and topic subscribers. The record is cloned ONCE here so neither
+// the hook nor any subscriber shares byte slices with the store — a
+// mutating consumer can corrupt its own view, never the CRDT.
+func (n *nodeImpl) recordAccepted(r Record) {
+	r = cloneRecord(r)
+	if n.cfg.OnAccepted != nil {
+		n.cfg.OnAccepted(r)
+	}
+	n.deliverToSubs(r)
 }
 
 // dispatchToSubscribers is invoked from ReceiveFrame after each successful
