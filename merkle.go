@@ -24,7 +24,12 @@ import (
 // Records with NodeID lexicographically in [rangeStart, rangeEnd] are
 // included.
 func topicMerkleRoot(s *recordStore, topic Topic, rangeStart, rangeEnd []byte) [32]byte {
-	recs := s.TopicRecords(topic) // sorted by NodeID
+	// Signed records only: consumer-local synthesised tombstones (empty
+	// Sig) must not poison the root — a node that crossed observer quorum
+	// and one that hasn't MUST still agree once they hold the same signed
+	// record set, and ranges must never ship a record the receiver's
+	// signature check rejects.
+	recs := s.topicRecordsSigned(topic) // sorted by NodeID
 	h := sha256.New()
 	for _, r := range recs {
 		nodeIDBytes := []byte(r.NodeID)
@@ -76,9 +81,25 @@ type merkleEngine struct {
 	mu        sync.Mutex
 	lastProbe map[Topic]time.Time
 
+	// lastReciprocal rate-limits the reciprocal probe HandleProbe sends
+	// back on root mismatch (per peer+topic). The reciprocal is what makes
+	// reconciliation bidirectional — a populated prober probing an empty
+	// responder triggers the responder to probe back, pulling the
+	// prober's records — but an unbounded echo would ping-pong while
+	// state is mid-transfer.
+	reciprocalMu   sync.Mutex
+	lastReciprocal map[string]time.Time
+
+	// gate applies the inbound admission checks (size/skew/binding/trust)
+	// to records arriving in MerkleRange frames. Set via SetInboundGate.
+	gate *inboundGate
+
 	paused    atomic.Bool
 	onApplied func(r Record)
 }
+
+// SetInboundGate installs the shared pre-store admission gate.
+func (m *merkleEngine) SetInboundGate(g *inboundGate) { m.gate = g }
 
 // SetOnApplied installs the same delivery callback used by Plumtrees so
 // records that arrive via merkle anti-entropy reach topic subscribers.
@@ -101,14 +122,15 @@ func newMerkle(store *recordStore, peers *peerTable, tport Transport, nowFn func
 		salt = binary.BigEndian.Uint64(h[:8])
 	}
 	return &merkleEngine{
-		store:        store,
-		peers:        peers,
-		tport:        tport,
-		nowFn:        nowFn,
-		probeEvery:   probeInterval,
-		maxRangeSize: 64, // records per range before subdivision
-		probeSalt:    salt,
-		lastProbe:    make(map[Topic]time.Time),
+		store:          store,
+		peers:          peers,
+		tport:          tport,
+		nowFn:          nowFn,
+		probeEvery:     probeInterval,
+		maxRangeSize:   64, // records per range before subdivision
+		probeSalt:      salt,
+		lastProbe:      make(map[Topic]time.Time),
+		lastReciprocal: make(map[string]time.Time),
 	}
 }
 
@@ -207,8 +229,29 @@ func (m *merkleEngine) HandleProbe(from NodeID, p *pb.MerkleProbe) {
 	if bytesEqual(localRoot[:], p.RootHash) {
 		return // roots match, no drift
 	}
-	// Collect records in the requested range, sorted by NodeID.
-	allRecs := m.store.TopicRecords(topic)
+
+	// Reciprocal probe (rate-limited): a probe only ever moves records
+	// responder→prober, so without this a populated prober facing an
+	// empty responder transfers nothing in the useful direction, and a
+	// fresh node can never learn topics it doesn't hold (it has nothing
+	// to enumerate in its own Tick). Root mismatch means the PROBER may
+	// hold records we lack — probe them back so their responder path
+	// pushes those records to us. The exchange terminates because
+	// HandleProbe short-circuits the moment roots match.
+	m.reciprocalMu.Lock()
+	rkey := string(from) + "\x00" + string(topic)
+	now := m.nowFn()
+	if last, ok := m.lastReciprocal[rkey]; !ok || now.Sub(last) >= 5*time.Second {
+		m.lastReciprocal[rkey] = now
+		m.reciprocalMu.Unlock()
+		m.sendProbe(from, topic, p.RangeStart, p.RangeEnd)
+	} else {
+		m.reciprocalMu.Unlock()
+	}
+
+	// Collect records in the requested range, sorted by NodeID — signed
+	// records only (synthesised tombstones never travel).
+	allRecs := m.store.topicRecordsSigned(topic)
 	inRange := make([]Record, 0, len(allRecs))
 	for _, r := range allRecs {
 		nidB := []byte(r.NodeID)
@@ -222,7 +265,20 @@ func (m *merkleEngine) HandleProbe(from NodeID, p *pb.MerkleProbe) {
 	}
 
 	if len(inRange) <= m.maxRangeSize {
-		// Range is small enough to send all records inline.
+		// Range is small enough to send all records inline. On an
+		// untruncated full-range response, append the topic's
+		// below-quorum observer attestations (bounded) so sparse-topology
+		// peers can repair their witness sets: attestations are signed
+		// records, so the receiver's standard verify+apply path
+		// accumulates them; they are windowed transient state and are
+		// deliberately NOT part of the root.
+		if p.RangeStart == nil && p.RangeEnd == nil {
+			atts := m.store.topicAttestations(topic)
+			if len(atts) > m.maxRangeSize {
+				atts = atts[:m.maxRangeSize]
+			}
+			inRange = append(inRange, atts...)
+		}
 		m.sendRange(from, topic, inRange, false)
 		return
 	}
@@ -238,6 +294,10 @@ func (m *merkleEngine) HandleRange(from NodeID, hlc *HLC, r *pb.MerkleRange) {
 	for _, pr := range r.Records {
 		rec := recordFromProto(pr)
 		if len(rec.PubKey) != ed25519.PublicKeySize || !verifyRecord(rec, ed25519.PublicKey(rec.PubKey)) {
+			continue
+		}
+		// Pre-store admission: size / clock-skew / key-binding / trust.
+		if m.gate != nil && m.gate.Admit(rec) != nil {
 			continue
 		}
 		hlc.Observe(rec.HLC)

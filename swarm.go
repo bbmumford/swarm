@@ -120,6 +120,70 @@ type Config struct {
 	// Used by the simulator, which drives Node.Tick directly. Default false
 	// (production wires the wall-clock ticker).
 	DisableBackgroundTicker bool
+
+	// ── Inbound trust / resource hardening (Phase-0.5 release blockers) ──
+
+	// TrustCheck, when non-nil, runs on every signature-verified inbound
+	// record BEFORE it can mutate the store (eager push, graft reply, and
+	// merkle range paths). Return a non-nil error to reject the record.
+	// This is the swarm-side enforcement point for an application
+	// TrustPolicy (NodeID↔key binding beyond the hex scheme, tenant/topic
+	// authorization, role entitlement, revocation). nil = accept (the
+	// pre-hardening behaviour).
+	TrustCheck func(Record) error
+
+	// RequireNodeKeyBinding, when true, rejects any inbound owner record
+	// whose NodeID is not the canonical hex encoding of its embedded
+	// PubKey, and any observer attestation whose ObserverNodeID does not
+	// bind to its PubKey the same way. Deployments whose NodeIDs follow
+	// nodeIDFromPub (the default when Config.NodeID is left empty) should
+	// set this — it closes "any keypair can claim any NodeID" at the
+	// store boundary. Off by default for NodeID schemes that are not
+	// reversible to a key (fingerprints); those wire TrustCheck instead.
+	RequireNodeKeyBinding bool
+
+	// MaxClockSkew bounds how far ahead of the local wall clock an inbound
+	// record's HLC may sit before it is rejected. The HLC.Observe clamp
+	// only protects the LOCAL clock — the CRDT winner comparison uses the
+	// raw remote HLC, so without this gate one far-future-stamped record
+	// permanently pins its (topic,node) slot. Default 10m.
+	MaxClockSkew time.Duration
+
+	// MaxTopics caps the number of distinct topics the store accepts.
+	// Records for new topics beyond the cap are rejected (never evict —
+	// eviction is an attack amplifier). Default 4096.
+	MaxTopics int
+
+	// MaxRecordsPerTopic caps distinct (topic,node) slots per topic.
+	// Default 65536.
+	MaxRecordsPerTopic int
+
+	// MaxAttestationsPerTarget caps distinct observers accumulated per
+	// tombstone target. Default 64.
+	MaxAttestationsPerTarget int
+
+	// MaxPendingIHaves caps the lazy-push missing-record tracker. Beyond
+	// the cap new IHave announcements are dropped (anti-entropy still
+	// recovers the records). Default 4096.
+	MaxPendingIHaves int
+
+	// OnAccepted, when non-nil, fires after EVERY accepted store change —
+	// local publishes, remote eager/graft/merkle applies, and quorum-
+	// crossed observer events — with a defensively-copied record. This is
+	// the accepted-change stream a projection/journal layer (loom
+	// LiveDirectory / DurableJournal) consumes; watermarking is the
+	// consumer's concern. Called synchronously on the apply path: keep it
+	// O(1) and non-blocking (hand off to a channel/queue).
+	OnAccepted func(Record)
+
+	// TopicTTL, when non-nil, returns the retention for records on a
+	// topic (0 = retain forever, the default). The background ticker
+	// reaps live records whose HLC wall-clock age exceeds the TTL, and
+	// tombstones at 2× the TTL (tombstones must outlive the live records
+	// they supersede or deletes resurrect via anti-entropy). Durable
+	// checkpoint-governed retention lives in the journal layer above —
+	// this is the in-memory bound.
+	TopicTTL func(Topic) time.Duration
 }
 
 // Defaults for the observer-tombstone (N-of-M witness) gate.

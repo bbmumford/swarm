@@ -33,4 +33,14 @@ var (
 
 	// ErrStopped is returned after Stop has been called.
 	ErrStopped = errors.New("swarm: engine stopped")
+
+	// ErrAlreadyStarted is returned by Start when the node is already
+	// running. A second Start would spawn a duplicate ticker goroutine and
+	// orphan the first one's cancel func.
+	ErrAlreadyStarted = errors.New("swarm: already started")
+
+	// ErrAlreadyWired is returned by Wire when the node already has a
+	// transport. Re-wiring would silently discard plumtree/merkle state
+	// and leave the old transport's callbacks dangling.
+	ErrAlreadyWired = errors.New("swarm: already wired")
 )

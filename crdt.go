@@ -51,6 +51,16 @@ type recordStore struct {
 	// nowFn — wall clock for attestation-window pruning. Defaults to
 	// time.Now; the deterministic simulator overrides via SetNowFn.
 	nowFn func() time.Time
+
+	// Cardinality caps (Phase-0.5 hardening). Zero = defaults applied by
+	// setCaps. Enforcement is reject-new, never evict-old: eviction under
+	// pressure lets an attacker push out honest state.
+	maxTopics          int
+	maxRecordsPerTopic int
+	maxAttestations    int
+
+	// rejectedCap counts records dropped by a cardinality cap.
+	rejectedCap uint64
 }
 
 type topicStore struct {
@@ -78,12 +88,32 @@ type topicStore struct {
 }
 
 func newRecordStore() *recordStore {
-	return &recordStore{
+	s := &recordStore{
 		byTopic:                     make(map[Topic]*topicStore),
 		observerQuorum:              DefaultObserverQuorum,
 		observerCorroborationWindow: DefaultObserverCorroborationWindow,
 		nowFn:                       time.Now,
 	}
+	s.setCaps(0, 0, 0)
+	return s
+}
+
+// setCaps installs the cardinality caps, applying defaults for zero values.
+func (s *recordStore) setCaps(maxTopics, maxRecordsPerTopic, maxAttestations int) {
+	if maxTopics <= 0 {
+		maxTopics = 4096
+	}
+	if maxRecordsPerTopic <= 0 {
+		maxRecordsPerTopic = 65536
+	}
+	if maxAttestations <= 0 {
+		maxAttestations = 64
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.maxTopics = maxTopics
+	s.maxRecordsPerTopic = maxRecordsPerTopic
+	s.maxAttestations = maxAttestations
 }
 
 // SetObserverRoleCheck wires the anchor-role gate (or any other gate) for
@@ -132,11 +162,27 @@ func (s *recordStore) SetNowFn(fn func() time.Time) {
 // verified Sig against the OBSERVER's public key, not the target's —
 // that's the v1 trust gate and the only way to keep Sybil resistance.
 func (s *recordStore) Apply(r Record) (applied bool, replaced bool) {
+	applied, replaced, _ = s.ApplyExt(r)
+	return applied, replaced
+}
+
+// ApplyExt is Apply plus an `accumulated` signal for observer attestations:
+// true when the attestation was FRESH (set or superseded its per-observer
+// slot) even though quorum was not crossed. The dissemination layer relays
+// exactly the accumulated-but-not-applied attestations — without that
+// signal, below-quorum attestations die one hop from their emitter and
+// K-of-N never converges on sparse topologies.
+func (s *recordStore) ApplyExt(r Record) (applied bool, replaced bool, accumulated bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	ts, ok := s.byTopic[r.Topic]
 	if !ok {
+		// Cardinality cap: reject records for new topics beyond MaxTopics.
+		if len(s.byTopic) >= s.maxTopics {
+			s.rejectedCap++
+			return false, false, false
+		}
 		ts = &topicStore{
 			records:          make(map[NodeID]Record),
 			attestations:     make(map[NodeID]map[NodeID]Record),
@@ -155,6 +201,13 @@ func (s *recordStore) Apply(r Record) (applied bool, replaced bool) {
 	// observer-synthesised tombstone auto-restores via this path.
 	cur, had := ts.records[r.NodeID]
 	if !had {
+		// Cardinality cap: reject NEW slots beyond MaxRecordsPerTopic
+		// (updates to existing slots always pass — convergence on known
+		// state must never be blocked by the cap).
+		if len(ts.records) >= s.maxRecordsPerTopic {
+			s.rejectedCap++
+			return false, false, false
+		}
 		ts.records[r.NodeID] = r
 		// First-time owner record: stamp the restored-at high-water-mark
 		// so any in-flight attestations that were issued before this
@@ -165,7 +218,7 @@ func (s *recordStore) Apply(r Record) (applied bool, replaced bool) {
 		if !r.Tombstone {
 			ts.restoredAtUnixMs[r.NodeID] = s.nowFn().UnixMilli()
 		}
-		return true, false
+		return true, false, false
 	}
 	replaced = true
 
@@ -185,20 +238,20 @@ func (s *recordStore) Apply(r Record) (applied bool, replaced bool) {
 		if !r.Tombstone {
 			ts.restoredAtUnixMs[r.NodeID] = s.nowFn().UnixMilli()
 		}
-		return true, true
+		return true, true, false
 	}
-	return false, true
+	return false, true, false
 }
 
 // applyAttestationLocked accumulates an observer attestation and, when
 // K-of-N within W is satisfied, synthesises a tombstone in the standard
 // records slot. Called under s.mu.
-func (s *recordStore) applyAttestationLocked(ts *topicStore, att Record) (applied bool, replaced bool) {
+func (s *recordStore) applyAttestationLocked(ts *topicStore, att Record) (applied bool, replaced bool, accumulated bool) {
 	// v1 anchor-only trust gate — reject attestations from non-anchor
 	// observers (or observers whose claimed NodeID does not bind to the
 	// Sig-verified PubKey) when the role check is wired.
 	if s.observerRoleCheck != nil && !s.observerRoleCheck(att.ObserverNodeID, att.PubKey) {
-		return false, false
+		return false, false, false
 	}
 
 	// Forward-skew gate — reject any attestation whose ObservedAtUnixMs is
@@ -213,7 +266,7 @@ func (s *recordStore) applyAttestationLocked(ts *topicStore, att Record) (applie
 	// skewed/malicious observer deny quorum".
 	nowMs := s.nowFn().UnixMilli()
 	if att.ObservedAtUnixMs > nowMs+observerForwardSkewBudget.Milliseconds() {
-		return false, false
+		return false, false, false
 	}
 
 	// Restored-at high-water-mark gate — reject attestations issued
@@ -227,14 +280,14 @@ func (s *recordStore) applyAttestationLocked(ts *topicStore, att Record) (applie
 	// combined with a single fresh post-restore attestation, satisfying
 	// K-of-N while silently violating the witness invariant.
 	if hwm, ok := ts.restoredAtUnixMs[att.NodeID]; ok && att.ObservedAtUnixMs <= hwm {
-		return false, false
+		return false, false, false
 	}
 
 	// If the target already has a tombstone (owner-emitted or previously
 	// synthesised) with HLC >= this attestation's HLC, the attestation is
 	// redundant. Don't pollute the witness set.
 	if cur, had := ts.records[att.NodeID]; had && cur.Tombstone && cur.HLC >= att.HLC {
-		return false, true
+		return false, true, false
 	}
 
 	set, ok := ts.attestations[att.NodeID]
@@ -251,7 +304,13 @@ func (s *recordStore) applyAttestationLocked(ts *topicStore, att Record) (applie
 	// from the same observer.
 	if cur, had := set[att.ObserverNodeID]; had &&
 		att.ObservedAtUnixMs <= cur.ObservedAtUnixMs && att.HLC <= cur.HLC {
-		return false, true
+		return false, true, false
+	}
+	// Cardinality cap: a NEW observer beyond MaxAttestationsPerTarget is
+	// rejected (existing observers may still supersede their own slot).
+	if _, had := set[att.ObserverNodeID]; !had && len(set) >= s.maxAttestations {
+		s.rejectedCap++
+		return false, true, false
 	}
 	set[att.ObserverNodeID] = att
 
@@ -285,7 +344,10 @@ func (s *recordStore) applyAttestationLocked(ts *topicStore, att Record) (applie
 		if len(set) == 0 {
 			delete(ts.attestations, att.NodeID)
 		}
-		return false, ts.records[att.NodeID].HLC != 0
+		// accumulated=true: this attestation was fresh (it set or
+		// superseded its observer slot) — the dissemination layer must
+		// relay it so OTHER nodes can count it toward THEIR quorum.
+		return false, ts.records[att.NodeID].HLC != 0, true
 	}
 
 	// Synthesise the tombstone. HLC = max(attestation HLCs) + 1 so it
@@ -304,11 +366,13 @@ func (s *recordStore) applyAttestationLocked(ts *topicStore, att Record) (applie
 		NodeID:    att.NodeID,
 		HLC:       maxHLC + 1,
 		Tombstone: true,
-		// PubKey/Sig left empty: this record is consumer-local; it is
-		// never re-broadcast (the contributing attestations are what
-		// gossip carries). Downstream callers MUST gate any rebroadcast
-		// on Sig non-empty; today only deliverToSubs reads the slot for
-		// subscriber dispatch and does not re-emit on the wire.
+		// PubKey/Sig left empty: this record is consumer-local — each
+		// node re-derives it from the gossiped attestations. It MUST
+		// never reach the wire or the Merkle tree: the merkle root and
+		// range collection use topicRecordsSigned (Sig non-empty), so a
+		// node that synthesised and one that hasn't still compute
+		// identical roots, and ranges never carry an unverifiable
+		// record a receiver would reject.
 	}
 
 	cur, had := ts.records[att.NodeID]
@@ -319,13 +383,33 @@ func (s *recordStore) applyAttestationLocked(ts *topicStore, att Record) (applie
 		// served once synth is recorded, but it's harmless to retain
 		// (and cheap to drop on next live publish via Apply's
 		// delete-on-overwrite).
-		return true, had
+		return true, had, true
 	}
-	return false, had
+	return false, had, true
 }
 
-// Get returns the current record for (topic, node) if any.
+// Get returns the current LIVE record for (topic, node). Honouring the
+// documented Node.Get contract, a tombstoned slot reports not-present.
+// The returned record's byte slices are defensive copies — callers may
+// mutate them without corrupting the store. (The gossip/merkle engines use
+// getRaw, which sees tombstones.)
 func (s *recordStore) Get(topic Topic, node NodeID) (Record, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	ts, ok := s.byTopic[topic]
+	if !ok {
+		return Record{}, false
+	}
+	r, ok := ts.records[node]
+	if !ok || r.Tombstone {
+		return Record{}, false
+	}
+	return cloneRecord(r), true
+}
+
+// getRaw returns the slot as stored — tombstones included, slices shared.
+// Engine-internal (IHave freshness, graft replies).
+func (s *recordStore) getRaw(topic Topic, node NodeID) (Record, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	ts, ok := s.byTopic[topic]
@@ -336,8 +420,34 @@ func (s *recordStore) Get(topic Topic, node NodeID) (Record, bool) {
 	return r, ok
 }
 
-// TopicRecords returns a snapshot of all records on a topic, sorted by NodeID.
+// TopicRecords returns a snapshot of the LIVE records on a topic, sorted by
+// NodeID, with defensively-copied byte slices — the documented public read
+// contract (tombstoned records are not present).
 func (s *recordStore) TopicRecords(topic Topic) []Record {
+	out := s.topicRecordsWhere(topic, func(r Record) bool { return !r.Tombstone })
+	for i := range out {
+		out[i] = cloneRecord(out[i])
+	}
+	return out
+}
+
+// topicRecordsAll returns every slot including tombstones and synthesised
+// records, slices shared. Engine/replay-internal: a late subscriber must
+// still learn about deaths, so replay delivers tombstones.
+func (s *recordStore) topicRecordsAll(topic Topic) []Record {
+	return s.topicRecordsWhere(topic, func(Record) bool { return true })
+}
+
+// topicRecordsSigned returns every slot that carries a signature — the
+// Merkle view. Consumer-local synthesised tombstones (empty Sig) are
+// excluded so (a) two nodes at the same attestation state compute the same
+// root whether or not they crossed quorum locally, and (b) ranges never
+// ship a record the receiver's signature check must reject.
+func (s *recordStore) topicRecordsSigned(topic Topic) []Record {
+	return s.topicRecordsWhere(topic, func(r Record) bool { return len(r.Sig) > 0 })
+}
+
+func (s *recordStore) topicRecordsWhere(topic Topic, keep func(Record) bool) []Record {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	ts, ok := s.byTopic[topic]
@@ -346,10 +456,73 @@ func (s *recordStore) TopicRecords(topic Topic) []Record {
 	}
 	out := make([]Record, 0, len(ts.records))
 	for _, r := range ts.records {
-		out = append(out, r)
+		if keep(r) {
+			out = append(out, r)
+		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].NodeID < out[j].NodeID })
 	return out
+}
+
+// topicAttestations returns the below-quorum observer attestations for a
+// topic (flattened, sorted for determinism). Merkle range responses append
+// these so sparse-topology peers can repair their witness sets — the
+// attestations are signed records, so the receiver's standard verify+apply
+// path admits them. They are NOT part of the Merkle root (they are
+// windowed, transient state; hashing them would make roots flap).
+func (s *recordStore) topicAttestations(topic Topic) []Record {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	ts, ok := s.byTopic[topic]
+	if !ok {
+		return nil
+	}
+	var out []Record
+	for _, set := range ts.attestations {
+		for _, a := range set {
+			out = append(out, a)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].NodeID != out[j].NodeID {
+			return out[i].NodeID < out[j].NodeID
+		}
+		return out[i].ObserverNodeID < out[j].ObserverNodeID
+	})
+	return out
+}
+
+// reapExpired applies per-topic TTL retention: live records whose HLC wall
+// age exceeds ttl are dropped; tombstones are retained for 2×ttl (they must
+// outlive the live records they supersede or deletes resurrect through
+// anti-entropy). Topics with ttl<=0 are untouched. Returns records dropped.
+func (s *recordStore) reapExpired(nowMs int64, ttlFor func(Topic) time.Duration) int {
+	if ttlFor == nil {
+		return 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	dropped := 0
+	for topic, ts := range s.byTopic {
+		ttl := ttlFor(topic)
+		if ttl <= 0 {
+			continue
+		}
+		ttlMs := ttl.Milliseconds()
+		for node, r := range ts.records {
+			wallMs, _ := Decompose(r.HLC)
+			ageMs := nowMs - int64(wallMs)
+			if (!r.Tombstone && ageMs > ttlMs) || (r.Tombstone && ageMs > 2*ttlMs) {
+				delete(ts.records, node)
+				delete(ts.restoredAtUnixMs, node)
+				dropped++
+			}
+		}
+		if len(ts.records) == 0 && len(ts.attestations) == 0 {
+			delete(s.byTopic, topic)
+		}
+	}
+	return dropped
 }
 
 // Topics returns the set of topics with at least one record.
