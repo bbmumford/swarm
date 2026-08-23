@@ -62,7 +62,11 @@ type plumtreesEngine struct {
 type ihaveKey struct {
 	topic  Topic
 	nodeID NodeID
-	hlc    uint64
+	// key is the origin's slot within the topic (Record.Key). Two
+	// announcements from one node at the same HLC for different slots are
+	// distinct pending grafts, so this field is part of the identity.
+	key string
+	hlc uint64
 }
 
 type ihaveEntry struct {
@@ -306,7 +310,7 @@ func (e *plumtreesEngine) handleEager(from NodeID, ep *pb.EagerPush) error {
 
 	// Clear any pending IHave for this record
 	e.missingMu.Lock()
-	delete(e.missingIHaves, ihaveKey{r.Topic, r.NodeID, r.HLC})
+	delete(e.missingIHaves, ihaveKey{r.Topic, r.NodeID, r.Key, r.HLC})
 	e.missingMu.Unlock()
 
 	// Notify Node so it delivers the record to topic subscribers.
@@ -333,11 +337,11 @@ func (e *plumtreesEngine) handleIHave(from NodeID, ih *pb.IHave) error {
 	// getRaw: a tombstoned slot still counts as "have" — the public Get
 	// hides tombstones, which would make us re-graft records our
 	// tombstone already supersedes.
-	if cur, ok := e.store.getRaw(topic, nodeID); ok && cur.HLC >= ih.Hlc {
+	if cur, ok := e.store.getRawKeyed(topic, nodeID, ih.Key); ok && cur.HLC >= ih.Hlc {
 		return nil
 	}
 
-	key := ihaveKey{topic, nodeID, ih.Hlc}
+	key := ihaveKey{topic, nodeID, ih.Key, ih.Hlc}
 	var bh [32]byte
 	copy(bh[:], ih.BodyHash)
 
@@ -370,9 +374,19 @@ func (e *plumtreesEngine) handleGraft(from NodeID, g *pb.Graft) error {
 	e.promoteTreeEdgeBounded(from)
 	topic := Topic(g.Topic)
 	nodeID := NodeID(g.NodeId)
-	// getRaw: tombstones must be serveable — a grafting peer asking about
-	// a dead node needs the tombstone, not silence.
-	r, ok := e.store.getRaw(topic, nodeID)
+	// getRawKeyed: tombstones must be serveable — a grafting peer asking
+	// about a dead node needs the tombstone, not silence — and the GRAFT
+	// names WHICH slot it wants.
+	//
+	// 🛑 Serving the keyless slot here regardless of g.Key looks harmless
+	// (the record sent is genuine and lands correctly on the requester)
+	// but it silently breaks lazy-push repair for every keyed record: the
+	// requester never receives the slot it grafted for, re-announces, and
+	// grafts again. Convergence then depends entirely on eager push and
+	// Merkle anti-entropy, with no error anywhere. An old peer's GRAFT
+	// carries no key, decodes as "", and correctly asks for the classical
+	// slot — so this stays wire-compatible in both directions.
+	r, ok := e.store.getRawKeyed(topic, nodeID, g.Key)
 	if !ok || len(r.Sig) == 0 {
 		// Nothing stored, or a consumer-local synthesised tombstone —
 		// synth records never travel (receivers cannot verify them).
@@ -422,7 +436,7 @@ func (e *plumtreesEngine) processGrafts(now time.Time) {
 		if now.Sub(entry.seenAt) < e.graftDelay {
 			continue
 		}
-		frame, _ := encodeFrame(frameGraft(key.topic, key.nodeID, key.hlc))
+		frame, _ := encodeFrame(frameGraft(key.topic, key.nodeID, key.key, key.hlc))
 		_ = e.tport.Send(entry.announcer, frame)
 		entry.grafted = true
 	}
@@ -460,7 +474,7 @@ func (e *plumtreesEngine) lazyPushToNonTreeEdges(r Record) {
 		return
 	}
 	bh := bodyHash(r)
-	frame, err := encodeFrame(frameIHave(r.Topic, r.NodeID, r.HLC, bh))
+	frame, err := encodeFrame(frameIHave(r.Topic, r.NodeID, r.Key, r.HLC, bh))
 	if err != nil {
 		return
 	}

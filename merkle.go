@@ -282,9 +282,35 @@ func (m *merkleEngine) HandleProbe(from NodeID, p *pb.MerkleProbe) {
 		m.sendRange(from, topic, inRange, false)
 		return
 	}
-	// Range is too large — send first half, mark truncated so the
-	// peer subdivides on its end.
+	// Range is too large — send the first half, mark truncated so the peer
+	// subdivides on its end.
+	//
+	// 🛑 The split MUST land on a NodeID boundary. HandleRange resumes with
+	// `nextStart = lastNodeID || 0x01`, a cursor that skips PAST every record
+	// sharing that NodeID — so under composite keys, cutting mid-way through
+	// one node's key group silently strands the group's remaining keys: the
+	// receiver never asks for them again and both sides settle on a stable
+	// but incomplete state. Advance the split to the end of the group it
+	// landed in.
+	//
+	// A single node holding more than maxRangeSize keys therefore ships its
+	// whole group in one response. That is deliberate — the group is the
+	// smallest indivisible unit this cursor can express — and it stays
+	// bounded by MaxRecordsPerTopic.
 	half := len(inRange) / 2
+	if half < 1 {
+		half = 1
+	}
+	for half < len(inRange) && inRange[half].NodeID == inRange[half-1].NodeID {
+		half++
+	}
+	if half >= len(inRange) {
+		// The split ran to the end of the slice: everything in range shares
+		// one NodeID, so there is no boundary to cut on and nothing is left
+		// for a second round. Send it whole and untruncated.
+		m.sendRange(from, topic, inRange, false)
+		return
+	}
 	m.sendRange(from, topic, inRange[:half], true)
 }
 
