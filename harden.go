@@ -17,6 +17,11 @@ import (
 // unauthorized or malformed record can do reaches the CRDT.
 //
 // Checks, in order (cheapest first):
+//  0. key length      — MaxKeyBytes, a CORRECTNESS bound rather than a
+//     resource policy: signableBytes length-prefixes Key with a u16, so a
+//     longer key would truncate its own length and let two distinct keys
+//     share one canonical byte string (a signature collision, hence a
+//     record-relocation primitive). Never relax this.
 //  1. body size       — Config.MaxRecordBytes (local Publish already
 //     enforced it; pre-hardening the inbound paths did not)
 //  2. clock skew      — the record's HLC wall part may not sit more than
@@ -41,10 +46,28 @@ type inboundGate struct {
 	rejectedTrust   atomic.Uint64
 }
 
+// MaxKeyBytes bounds Record.Key. It is fixed by the canonical signing
+// encoding, not by policy: signableBytes writes a u16 length prefix, so a
+// key at or beyond 1<<16 bytes would wrap its own length and two distinct
+// keys could produce identical signable bytes. Enforced on both the local
+// Publish path and every inbound path.
+const MaxKeyBytes = 1<<16 - 1
+
+// DefaultMaxKeysPerNodePerTopic bounds how many slots one node may occupy on
+// a single topic when Config.MaxKeysPerNodePerTopic is unset.
+//
+// 4096 is deliberately generous against every use composite keys were added
+// for — a latency observation per fleet peer, a record per content holding —
+// while still requiring 16 distinct nodes to exhaust the 65536-slot default
+// topic budget. Before composite keys that budget was implicitly per-node
+// (one node, one slot); this keeps a single node from consuming it alone.
+const DefaultMaxKeysPerNodePerTopic = 4096
+
 var (
 	errGateTooLarge  = errors.New("swarm: inbound record body exceeds maximum size")
 	errGateSkew      = errors.New("swarm: inbound record HLC too far in the future")
 	errGateBinding   = errors.New("swarm: record NodeID does not bind to its public key")
+	errGateKeyTooLong = errors.New("swarm: record key exceeds MaxKeyBytes")
 )
 
 func newInboundGate(cfg Config) *inboundGate {
@@ -69,6 +92,13 @@ func newInboundGate(cfg Config) *inboundGate {
 
 // Admit returns nil when r may proceed to store.Apply.
 func (g *inboundGate) Admit(r Record) error {
+	// Unconditional — MaxKeyBytes is an encoding invariant, so unlike the
+	// caps below it is never disabled by a zero-valued config.
+	if len(r.Key) > MaxKeyBytes {
+		g.rejectedSize.Add(1)
+		return errGateKeyTooLong
+	}
+
 	if g.maxBytes > 0 && len(r.Body) > g.maxBytes {
 		g.rejectedSize.Add(1)
 		return errGateTooLarge
