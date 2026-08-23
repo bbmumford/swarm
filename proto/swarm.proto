@@ -47,6 +47,18 @@ message Record {
   // declared. Used by the corroboration-window gate. Zero for
   // owner-signed records.
   int64  observed_at_unix_ms = 9;
+
+  // key sub-divides a node's slot on a topic: the store is keyed by
+  // (topic, node_id, key), so one node can hold many records on one topic
+  // (a latency observation per peer, a record per content hash). Each
+  // (topic, node_id, key) converges independently under HLC-max.
+  //
+  // Empty is the classical one-record-per-node form. key is covered by
+  // sig, but it is appended to the canonical signing bytes ONLY when
+  // non-empty — so a record that does not use it produces exactly the
+  // signable bytes it always did, and no pre-existing signature is
+  // invalidated. See swarm/sig.go.
+  string key = 10;
 }
 
 // Frame is the on-wire envelope for swarm protocol messages.
@@ -98,6 +110,13 @@ message IHave {
   bytes  node_id = 2;
   uint64 hlc = 3;
   bytes  body_hash = 4; // SHA256(body)
+  // key identifies WHICH of the origin's slots on this topic is being
+  // announced (see Record.key). Empty is the classical single slot.
+  // Without it a lazy-push announcement for one of a node's keyed records
+  // would be compared against — and grafted into — the node's keyless
+  // slot, so keyed records would converge only by eager push and Merkle
+  // anti-entropy, and a graft would serve the wrong record.
+  string key = 5;
 }
 
 // Graft promotes the sender to a tree edge from the receiver's perspective.
@@ -105,6 +124,9 @@ message Graft {
   string topic = 1;
   bytes  node_id = 2; // the Record's origin we want to pull
   uint64 hlc = 3;
+  // key identifies WHICH of the origin's slots we want (see Record.key).
+  // Empty is the classical single slot.
+  string key = 4;
 }
 
 // Prune demotes the sender from a tree edge.
