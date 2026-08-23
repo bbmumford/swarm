@@ -64,8 +64,19 @@ type Record struct {
 	// declared. Used by the corroboration-window gate. Zero for
 	// owner-signed records.
 	ObservedAtUnixMs int64 `protobuf:"varint,9,opt,name=observed_at_unix_ms,json=observedAtUnixMs,proto3" json:"observed_at_unix_ms,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// key sub-divides a node's slot on a topic: the store is keyed by
+	// (topic, node_id, key), so one node can hold many records on one topic
+	// (a latency observation per peer, a record per content hash). Each
+	// (topic, node_id, key) converges independently under HLC-max.
+	//
+	// Empty is the classical one-record-per-node form. key is covered by
+	// sig, but it is appended to the canonical signing bytes ONLY when
+	// non-empty — so a record that does not use it produces exactly the
+	// signable bytes it always did, and no pre-existing signature is
+	// invalidated. See swarm/sig.go.
+	Key           string `protobuf:"bytes,10,opt,name=key,proto3" json:"key,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Record) Reset() {
@@ -159,6 +170,13 @@ func (x *Record) GetObservedAtUnixMs() int64 {
 		return x.ObservedAtUnixMs
 	}
 	return 0
+}
+
+func (x *Record) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
 }
 
 // Frame is the on-wire envelope for swarm protocol messages.
@@ -534,11 +552,18 @@ func (x *EagerPush) GetTtl() uint32 {
 // IHave announces a digest of a Record to non-tree-edge peers. They can
 // then issue a Graft to pull the full Record.
 type IHave struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Topic         string                 `protobuf:"bytes,1,opt,name=topic,proto3" json:"topic,omitempty"`
-	NodeId        []byte                 `protobuf:"bytes,2,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
-	Hlc           uint64                 `protobuf:"varint,3,opt,name=hlc,proto3" json:"hlc,omitempty"`
-	BodyHash      []byte                 `protobuf:"bytes,4,opt,name=body_hash,json=bodyHash,proto3" json:"body_hash,omitempty"` // SHA256(body)
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	Topic    string                 `protobuf:"bytes,1,opt,name=topic,proto3" json:"topic,omitempty"`
+	NodeId   []byte                 `protobuf:"bytes,2,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
+	Hlc      uint64                 `protobuf:"varint,3,opt,name=hlc,proto3" json:"hlc,omitempty"`
+	BodyHash []byte                 `protobuf:"bytes,4,opt,name=body_hash,json=bodyHash,proto3" json:"body_hash,omitempty"` // SHA256(body)
+	// key identifies WHICH of the origin's slots on this topic is being
+	// announced (see Record.key). Empty is the classical single slot.
+	// Without it a lazy-push announcement for one of a node's keyed records
+	// would be compared against — and grafted into — the node's keyless
+	// slot, so keyed records would converge only by eager push and Merkle
+	// anti-entropy, and a graft would serve the wrong record.
+	Key           string `protobuf:"bytes,5,opt,name=key,proto3" json:"key,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -601,12 +626,22 @@ func (x *IHave) GetBodyHash() []byte {
 	return nil
 }
 
+func (x *IHave) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
 // Graft promotes the sender to a tree edge from the receiver's perspective.
 type Graft struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Topic         string                 `protobuf:"bytes,1,opt,name=topic,proto3" json:"topic,omitempty"`
-	NodeId        []byte                 `protobuf:"bytes,2,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"` // the Record's origin we want to pull
-	Hlc           uint64                 `protobuf:"varint,3,opt,name=hlc,proto3" json:"hlc,omitempty"`
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Topic  string                 `protobuf:"bytes,1,opt,name=topic,proto3" json:"topic,omitempty"`
+	NodeId []byte                 `protobuf:"bytes,2,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"` // the Record's origin we want to pull
+	Hlc    uint64                 `protobuf:"varint,3,opt,name=hlc,proto3" json:"hlc,omitempty"`
+	// key identifies WHICH of the origin's slots we want (see Record.key).
+	// Empty is the classical single slot.
+	Key           string `protobuf:"bytes,4,opt,name=key,proto3" json:"key,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -660,6 +695,13 @@ func (x *Graft) GetHlc() uint64 {
 		return x.Hlc
 	}
 	return 0
+}
+
+func (x *Graft) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
 }
 
 // Prune demotes the sender from a tree edge.
@@ -879,7 +921,7 @@ var File_swarm_proto protoreflect.FileDescriptor
 
 const file_swarm_proto_rawDesc = "" +
 	"\n" +
-	"\vswarm.proto\x12\bswarm.v1\"\xff\x01\n" +
+	"\vswarm.proto\x12\bswarm.v1\"\x91\x02\n" +
 	"\x06Record\x12\x14\n" +
 	"\x05topic\x18\x01 \x01(\tR\x05topic\x12\x17\n" +
 	"\anode_id\x18\x02 \x01(\fR\x06nodeId\x12\x10\n" +
@@ -889,7 +931,9 @@ const file_swarm_proto_rawDesc = "" +
 	"\x03sig\x18\x06 \x01(\fR\x03sig\x12\x17\n" +
 	"\apub_key\x18\a \x01(\fR\x06pubKey\x12(\n" +
 	"\x10observer_node_id\x18\b \x01(\fR\x0eobserverNodeId\x12-\n" +
-	"\x13observed_at_unix_ms\x18\t \x01(\x03R\x10observedAtUnixMs\"\xd8\x03\n" +
+	"\x13observed_at_unix_ms\x18\t \x01(\x03R\x10observedAtUnixMs\x12\x10\n" +
+	"\x03key\x18\n" +
+	" \x01(\tR\x03key\"\xd8\x03\n" +
 	"\x05Frame\x12+\n" +
 	"\x05eager\x18\x01 \x01(\v2\x13.swarm.v1.EagerPushH\x00R\x05eager\x12'\n" +
 	"\x05ihave\x18\x02 \x01(\v2\x0f.swarm.v1.IHaveH\x00R\x05ihave\x12'\n" +
@@ -913,16 +957,18 @@ const file_swarm_proto_rawDesc = "" +
 	"\x05error\x18\x03 \x01(\tR\x05error\"G\n" +
 	"\tEagerPush\x12(\n" +
 	"\x06record\x18\x01 \x01(\v2\x10.swarm.v1.RecordR\x06record\x12\x10\n" +
-	"\x03ttl\x18\x02 \x01(\rR\x03ttl\"e\n" +
+	"\x03ttl\x18\x02 \x01(\rR\x03ttl\"w\n" +
 	"\x05IHave\x12\x14\n" +
 	"\x05topic\x18\x01 \x01(\tR\x05topic\x12\x17\n" +
 	"\anode_id\x18\x02 \x01(\fR\x06nodeId\x12\x10\n" +
 	"\x03hlc\x18\x03 \x01(\x04R\x03hlc\x12\x1b\n" +
-	"\tbody_hash\x18\x04 \x01(\fR\bbodyHash\"H\n" +
+	"\tbody_hash\x18\x04 \x01(\fR\bbodyHash\x12\x10\n" +
+	"\x03key\x18\x05 \x01(\tR\x03key\"Z\n" +
 	"\x05Graft\x12\x14\n" +
 	"\x05topic\x18\x01 \x01(\tR\x05topic\x12\x17\n" +
 	"\anode_id\x18\x02 \x01(\fR\x06nodeId\x12\x10\n" +
-	"\x03hlc\x18\x03 \x01(\x04R\x03hlc\"\x1d\n" +
+	"\x03hlc\x18\x03 \x01(\x04R\x03hlc\x12\x10\n" +
+	"\x03key\x18\x04 \x01(\tR\x03key\"\x1d\n" +
 	"\x05Prune\x12\x14\n" +
 	"\x05topic\x18\x01 \x01(\tR\x05topic\"~\n" +
 	"\vMerkleProbe\x12\x14\n" +

@@ -38,6 +38,7 @@ func recordToProto(r Record) *pb.Record {
 		PubKey:           r.PubKey,
 		ObserverNodeId:   []byte(r.ObserverNodeID),
 		ObservedAtUnixMs: r.ObservedAtUnixMs,
+		Key:              r.Key,
 	}
 }
 
@@ -53,6 +54,7 @@ func recordFromProto(p *pb.Record) Record {
 		PubKey:           p.PubKey,
 		ObserverNodeID:   NodeID(p.ObserverNodeId),
 		ObservedAtUnixMs: p.ObservedAtUnixMs,
+		Key:              p.Key,
 	}
 }
 
@@ -74,7 +76,7 @@ func frameEagerPush(r Record, ttl uint32) *pb.Frame {
 	}
 }
 
-func frameIHave(topic Topic, nodeID NodeID, hlc uint64, h [32]byte) *pb.Frame {
+func frameIHave(topic Topic, nodeID NodeID, key string, hlc uint64, h [32]byte) *pb.Frame {
 	return &pb.Frame{
 		Kind: &pb.Frame_Ihave{
 			Ihave: &pb.IHave{
@@ -82,18 +84,20 @@ func frameIHave(topic Topic, nodeID NodeID, hlc uint64, h [32]byte) *pb.Frame {
 				NodeId:   []byte(nodeID),
 				Hlc:      hlc,
 				BodyHash: h[:],
+				Key:      key,
 			},
 		},
 	}
 }
 
-func frameGraft(topic Topic, nodeID NodeID, hlc uint64) *pb.Frame {
+func frameGraft(topic Topic, nodeID NodeID, key string, hlc uint64) *pb.Frame {
 	return &pb.Frame{
 		Kind: &pb.Frame_Graft{
 			Graft: &pb.Graft{
 				Topic:  string(topic),
 				NodeId: []byte(nodeID),
 				Hlc:    hlc,
+				Key:    key,
 			},
 		},
 	}
