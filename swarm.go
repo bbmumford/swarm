@@ -57,6 +57,23 @@ type Record struct {
 	PubKey    []byte // raw 32-byte Ed25519 public key for Sig verification
 	Sig       []byte // Ed25519 over signableBytes(Record); see sig.go
 
+	// Key sub-divides a node's slot on a topic. The store is keyed by
+	// (Topic, NodeID, Key), so one node may hold many records on one
+	// topic — the latency observations it has for each distinct peer,
+	// the content hashes it holds, and so on. Each (Topic, NodeID, Key)
+	// converges independently under the same HLC-max rule.
+	//
+	// Key == "" is the classical single-slot-per-node form and remains
+	// the default: a publisher that never sets Key sees exactly the
+	// pre-composite-key behaviour, and its signable bytes are unchanged
+	// (see signableBytes — the key suffix is emitted only when Key is
+	// non-empty, so no existing signature is invalidated).
+	//
+	// Key is covered by Sig. Moving a record between keys — or stripping
+	// the key to make a per-peer observation look like the node's single
+	// canonical record — invalidates the signature.
+	Key string
+
 	// ObserverNodeID — when set, this record is an observer-signed
 	// attestation that (Topic, NodeID)'s owner is dead. Empty for
 	// owner-signed records.
@@ -77,6 +94,19 @@ func (r Record) IsObserverAttestation() bool {
 // Subscriber is invoked for every Record applied to the local store.
 // The subscriber MUST NOT block; expensive work must be done off the swarm
 // goroutine.
+//
+// 🛑 That rule is not advisory politeness — Subscribe's return time depends on
+// it. Records arriving while Subscribe is replaying are queued and drained
+// before live delivery resumes (see subGate), so Subscribe returns once the
+// subscriber has caught up with arrivals. A subscriber that outruns the
+// publish rate — an in-memory index update, which is what every in-tree
+// subscriber is — makes that a few microseconds. A subscriber that BLOCKS
+// inverts the relationship and couples Subscribe to the topic's publish rate.
+// MEASURED (@Z-345): a deliberately slow 2ms subscriber against a topic
+// published for 3s returned from Subscribe after 5,695ms instead of 123ms.
+//
+// If Subscribe is slow, the subscriber is violating this contract; that is the
+// thing to fix, not the gate.
 type Subscriber func(r Record) error
 
 // Config configures a Node instance. See PerPeerConfig for per-peer knobs.
@@ -157,6 +187,18 @@ type Config struct {
 	// MaxRecordsPerTopic caps distinct (topic,node) slots per topic.
 	// Default 65536.
 	MaxRecordsPerTopic int
+
+	// MaxKeysPerNodePerTopic caps how many slots ONE node may occupy on a
+	// single topic. Default: DefaultMaxKeysPerNodePerTopic.
+	//
+	// This bound exists only because of composite keys and closes the
+	// amplification they introduce. Before Record.Key a node could hold
+	// exactly one slot per topic, so MaxRecordsPerTopic was implicitly a
+	// per-node bound too; with keys, one node could otherwise open every
+	// slot in the topic's budget and crowd out every honest peer.
+	// Enforcement is reject-new, never evict-old — evicting under pressure
+	// would hand an attacker the very thing the cap denies.
+	MaxKeysPerNodePerTopic int
 
 	// MaxAttestationsPerTarget caps distinct observers accumulated per
 	// tombstone target. Default 64.
@@ -249,11 +291,48 @@ type Node interface {
 
 	// Subscribe registers a callback for records on the given topic.
 	// The callback is invoked on every applied record (including tombstones).
+	//
+	// On return the subscriber has seen the topic's current state (replay,
+	// tombstones included) followed in order by anything that arrived during
+	// that replay — no gap, no duplicate, no interleaving.
+	//
+	// 🛑 THAT SERIALISATION COVERS THE REPLAY→LIVE TRANSITION ONLY. Once the
+	// transition completes, deliver() releases its lock before invoking the
+	// subscriber, so STEADY-STATE DELIVERY IS CONCURRENT: several publishers
+	// enter the callback at once. MEASURED (@Z-346): 6 concurrent publishers
+	// → 6 concurrent entries, post-transition.
+	//
+	// ⇒ A subscriber MUST be safe for concurrent entry. It is not a mutex.
+	// (loom's AddressTable and RoleTable both carry their own RWMutex and are
+	// correct under this; a new subscriber that assumes serial delivery
+	// because the transition is serial would be wrong.)
+	//
+	// ⚠ Return time is therefore bounded by the SUBSCRIBER, not by the store:
+	// see Subscriber's MUST-NOT-BLOCK contract. Callers that invoke this from
+	// a synchronous constructor on a startup path (loom's NewAddressTable /
+	// NewRoleTable / bridgeReachFromSwarm all do, on `fleet.peer`) inherit
+	// that bound.
 	Subscribe(topic Topic, sub Subscriber) (Unsubscribe, error)
 
 	// Publish creates and signs a Record with the configured key, then
 	// broadcasts it via Plumtrees + lazy push. HLC is assigned by the Node.
+	// Publishes into this node's classical single slot on the topic —
+	// equivalent to PublishKeyed(topic, "", body).
 	Publish(topic Topic, body []byte) error
+
+	// PublishKeyed publishes into one of this node's per-key slots on a
+	// topic (Record.Key), so a node can hold many records there: a latency
+	// observation per observed peer, a record per content hash it serves.
+	// Each (topic, node, key) converges independently under HLC-max.
+	//
+	// key "" is the classical single slot, so PublishKeyed(t, "", b) and
+	// Publish(t, b) are the same operation. key may not exceed MaxKeyBytes.
+	PublishKeyed(topic Topic, key string, body []byte) error
+
+	// PublishKeyedTombstone retires one of this node's per-key slots. The
+	// tombstone is owner-authored, so it applies immediately on every
+	// consumer — the composite-key counterpart of PublishTombstone.
+	PublishKeyedTombstone(topic Topic, key string) error
 
 	// PublishTombstone publishes a tombstone for the (topic, node) pair.
 	// The signing key is this node's own private key, so the tombstone is
@@ -297,7 +376,18 @@ type Node interface {
 	// exists. This is the production read API over the convergence store
 	// — a stable, exported alternative to the test-only InternalStore.
 	// A tombstoned or expired record is reported as not-present.
+	// Reads the node's classical single slot: Get == GetKeyed(…, "").
 	Get(topic Topic, node NodeID) (Record, bool)
+
+	// GetKeyed returns one per-key slot of a node on a topic. key "" is the
+	// classical single slot.
+	GetKeyed(topic Topic, node NodeID, key string) (Record, bool)
+
+	// NodeRecords returns every live record a node holds on a topic, in
+	// canonical (NodeID, Key) order — the composite-key read. Use it where
+	// a node contributes a SET of facts to one topic (its latency
+	// observations, its content holdings) rather than a single value.
+	NodeRecords(topic Topic, node NodeID) []Record
 
 	// TopicRecords returns a snapshot of every live record on a topic.
 	// Consumers build typed, tenant-scoped projections (members, reach,
