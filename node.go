@@ -88,7 +88,7 @@ func New(cfg Config) (Node, error) {
 		onPaused:  cfg.OnPaused,
 		onResumed: cfg.OnResumed,
 	}
-	n.store.setCaps(cfg.MaxTopics, cfg.MaxRecordsPerTopic, cfg.MaxAttestationsPerTarget)
+	n.store.setCaps(cfg.MaxTopics, cfg.MaxRecordsPerTopic, cfg.MaxKeysPerNodePerTopic, cfg.MaxAttestationsPerTarget)
 	if cfg.NowFn != nil {
 		n.store.SetNowFn(cfg.NowFn)
 	}
@@ -244,9 +244,15 @@ func (n *nodeImpl) Subscribe(topic Topic, sub Subscriber) (Unsubscribe, error) {
 
 	// Replay the current state — including tombstones: a late subscriber
 	// must learn about deaths, not just survivors.
-	replayed := make(map[NodeID]uint64)
+	// Keyed by SLOT, not by node: under composite keys one node holds many
+	// records on a topic, so a node-keyed map would keep only the last
+	// replayed HLC and then suppress live deliveries for that node's OTHER
+	// keys whose HLC happened to be lower — a silent, permanent delivery
+	// loss. The dedup comment below always said "same slot"; with composite
+	// keys the slot is (NodeID, Key).
+	replayed := make(map[recordKey]uint64)
 	for _, r := range n.store.topicRecordsAll(topic) {
-		replayed[r.NodeID] = r.HLC
+		replayed[keyOf(r)] = r.HLC
 		_ = sub(cloneRecord(r))
 	}
 	gate.finishReplay(replayed)
@@ -281,21 +287,68 @@ func (g *subGate) deliver(r Record) error {
 
 // finishReplay flushes live records queued during replay, skipping any
 // already covered by the replayed snapshot (same slot, HLC not newer).
-func (g *subGate) finishReplay(replayed map[NodeID]uint64) {
+//
+// 🛑 `replaying` stays TRUE until the queue is fully drained, and is cleared
+// only while holding the lock with the queue empty. Clearing it before the
+// flush — which is what this did — opens the transition in two ways at once:
+// a concurrent deliver() reads replaying==false and calls g.inner directly,
+// so (a) the subscriber is entered by several goroutines simultaneously,
+// breaking the serialisation this type exists to provide, and (b) that live
+// record can overtake records queued BEFORE it, so replay/live ordering is
+// not monotonic. Measured before the fix: 6 concurrent entries, and a queued
+// record delivered after three live ones.
+//
+// ⚠ `-race` is CLEAN on that defect and always was — the queue handoff is
+// properly locked, so nothing races in this package's memory. What breaks is
+// the contract the gate advertises, and the damage lands in the subscriber's
+// state where the detector cannot see it.
+//
+// The drain loop re-checks under the lock because deliver() may enqueue more
+// while the previous batch is being handed to the subscriber. A subscriber is
+// never entered concurrently because only this goroutine calls g.inner while
+// replaying is still set.
+//
+// ⚠ TERMINATION IS A RATE COMPARISON, AND IT IS THE PRICE OF THE GUARANTEE
+// (measured by @Z-345, recorded here so nobody re-derives it): the loop exits
+// when it finds the queue empty under the lock, so Subscribe returns only once
+// the subscriber has caught up with arrivals. **A 2ms subscriber against a
+// topic published for 3s returned after 5,695ms instead of 123ms — 46×.**
+//
+// This is NOT a defect to be bounded away: you cannot both hold the gate shut
+// until the queue drains AND return early — an early return is precisely the
+// pre-fix bug (live records overtaking queued ones, subscriber entered
+// concurrently). The termination condition is already carried by
+// `Subscriber`'s documented MUST-NOT-BLOCK contract, which @Z's probe
+// deliberately violates to force the case. Every in-tree subscriber is an
+// in-memory index update and outruns any publisher by orders of magnitude.
+//
+// 🛑 So the correct response to a slow Subscribe is to fix the SUBSCRIBER, not
+// to weaken this loop. If a future subscriber genuinely must do slow work, it
+// owes a hand-off to its own goroutine — which the Subscriber contract already
+// requires of it.
+func (g *subGate) finishReplay(replayed map[recordKey]uint64) {
 	g.mu.Lock()
-	queue := g.queue
-	g.queue = nil
+	for len(g.queue) > 0 {
+		batch := g.queue
+		g.queue = nil
+		g.mu.Unlock()
+		for _, r := range batch {
+			if hlc, ok := replayed[keyOf(r)]; ok && r.HLC <= hlc {
+				continue
+			}
+			_ = g.inner(r)
+		}
+		g.mu.Lock()
+	}
 	g.replaying = false
 	g.mu.Unlock()
-	for _, r := range queue {
-		if hlc, ok := replayed[r.NodeID]; ok && r.HLC <= hlc {
-			continue
-		}
-		_ = g.inner(r)
-	}
 }
 
 func (n *nodeImpl) Publish(topic Topic, body []byte) error {
+	return n.PublishKeyed(topic, "", body)
+}
+
+func (n *nodeImpl) PublishKeyed(topic Topic, key string, body []byte) error {
 	if n.stopped.Load() {
 		return ErrStopped
 	}
@@ -307,10 +360,17 @@ func (n *nodeImpl) Publish(topic Topic, body []byte) error {
 	if len(body) > n.cfg.MaxRecordBytes {
 		return ErrTooLarge
 	}
+	// Enforced locally as well as at the inbound gate: MaxKeyBytes is an
+	// encoding invariant (the u16 length prefix in signableBytes), so a
+	// record that violates it must never be signed in the first place.
+	if len(key) > MaxKeyBytes {
+		return ErrTooLarge
+	}
 
 	r := Record{
 		Topic:  topic,
 		NodeID: n.id,
+		Key:    key,
 		HLC:    n.hlc.Now(),
 		// Deep-copy: the store, the wire encoder, and every subscriber
 		// share this slice from here on — a caller mutating its body
@@ -326,12 +386,20 @@ func (n *nodeImpl) Publish(topic Topic, body []byte) error {
 }
 
 func (n *nodeImpl) PublishTombstone(topic Topic) error {
+	return n.PublishKeyedTombstone(topic, "")
+}
+
+func (n *nodeImpl) PublishKeyedTombstone(topic Topic, key string) error {
 	if n.stopped.Load() {
 		return ErrStopped
+	}
+	if len(key) > MaxKeyBytes {
+		return ErrTooLarge
 	}
 	r := Record{
 		Topic:     topic,
 		NodeID:    n.id,
+		Key:       key,
 		HLC:       n.hlc.Now(),
 		Tombstone: true,
 	}
@@ -435,10 +503,15 @@ func (n *nodeImpl) SetTenant(tenantID string) error {
 	// We do this only for our own records — peers tombstone theirs.
 	store := n.store
 	store.mu.RLock()
+	// Every slot, not just the keyless one: under composite keys this node
+	// may hold many records per topic, and a tenant change must retire all
+	// of them or the un-tombstoned ones keep gossiping under the old tenant.
 	mine := make([]Record, 0)
 	for _, ts := range store.byTopic {
-		if r, ok := ts.records[n.id]; ok {
-			mine = append(mine, r)
+		for k, r := range ts.records {
+			if k.NodeID == n.id {
+				mine = append(mine, r)
+			}
 		}
 	}
 	store.mu.RUnlock()
@@ -447,6 +520,7 @@ func (n *nodeImpl) SetTenant(tenantID string) error {
 		tomb := Record{
 			Topic:     r.Topic,
 			NodeID:    n.id,
+			Key:       r.Key,
 			HLC:       n.hlc.Now(),
 			Tombstone: true,
 		}
@@ -507,6 +581,17 @@ func (n *nodeImpl) Role() Role {
 // the convergence store; delegates to the same store the gossip path applies to.
 func (n *nodeImpl) Get(topic Topic, node NodeID) (Record, bool) {
 	return n.store.Get(topic, node)
+}
+
+// GetKeyed returns one per-key slot of a node on a topic.
+func (n *nodeImpl) GetKeyed(topic Topic, node NodeID, key string) (Record, bool) {
+	return n.store.GetKeyed(topic, node, key)
+}
+
+// NodeRecords returns every live record a node holds on a topic, in
+// canonical (NodeID, Key) order.
+func (n *nodeImpl) NodeRecords(topic Topic, node NodeID) []Record {
+	return n.store.NodeRecords(topic, node)
 }
 
 // TopicRecords returns a snapshot of every live record on a topic.
@@ -625,11 +710,27 @@ func (n *nodeImpl) dispatchToSubscribers(from NodeID) {
 // deliverToSubs delivers a record to all subscribers of its topic.
 // Called from Node.Publish for local records, from plumtrees and merkle
 // after applying remote records.
+// 🛑 THE SNAPSHOT IS A SLICE, NOT THE MAP. `subs := n.subs[r.Topic]` copies a
+// map HEADER — a pointer — so releasing the lock and then ranging over it
+// iterates live shared state. Subscribe writes `n.subs[topic][id]` and the
+// unsubscribe closure deletes from that same inner map; both hold subsMu,
+// but this read did not, so a subscribe or unsubscribe concurrent with a
+// delivery is a concurrent map read/write. Go may panic outright
+// ("concurrent map iteration and map write") rather than merely tearing.
+//
+// MEASURED: the race detector fires on Subscribe (node.go:264) against this
+// range. Copying the CALLBACKS under the lock closes it while still keeping
+// subscriber code out of the critical section — which is why the lock was
+// being released here in the first place.
 func (n *nodeImpl) deliverToSubs(r Record) {
 	n.subsMu.RLock()
 	subs := n.subs[r.Topic]
-	n.subsMu.RUnlock()
+	fns := make([]Subscriber, 0, len(subs))
 	for _, fn := range subs {
+		fns = append(fns, fn)
+	}
+	n.subsMu.RUnlock()
+	for _, fn := range fns {
 		_ = fn(r)
 	}
 }
