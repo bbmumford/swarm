@@ -9,9 +9,25 @@ import (
 	"time"
 )
 
-// recordStore is a per-topic δ-CRDT keyed by (NodeID). Each NodeID slot
-// holds at most one Record (the latest by HLC). Tombstones override live
-// records.
+// recordStore is a per-topic δ-CRDT keyed by (NodeID, Key). Each slot holds
+// at most one Record (the latest by HLC). Tombstones override live records.
+//
+// Key sub-divides a node's presence on a topic so one node can hold many
+// records there — a latency observation per observed peer, a record per
+// content hash it serves. Key == "" is the classical single-slot-per-node
+// form, so a publisher that never sets Key behaves exactly as before.
+// Each (Topic, NodeID, Key) converges independently under the same HLC-max
+// rule; Key is covered by the record signature, so a record cannot be moved
+// between keys (see signableBytes).
+//
+// Observer attestations are deliberately NOT keyed by Key. An attestation
+// asserts that a NODE is dead, which is a statement about the node rather
+// than about one of its records — so the witness set, the restored-at
+// high-water-mark, and the synthesised tombstone all operate at NodeID
+// granularity, and crossing quorum tombstones EVERY key that node holds on
+// the topic. Keying the witness set by (NodeID, Key) would instead require
+// K observers to independently witness each key, which no observer can do:
+// they observe gossip silence from a node, not from a key.
 //
 // The δ-CRDT property: for any two stores A and B, A.merge(B) == B.merge(A).
 // Merge is HLC-max (highest HLC wins; ties broken lexicographically on the
@@ -57,15 +73,85 @@ type recordStore struct {
 	// pressure lets an attacker push out honest state.
 	maxTopics          int
 	maxRecordsPerTopic int
+	maxKeysPerNode     int
 	maxAttestations    int
 
 	// rejectedCap counts records dropped by a cardinality cap.
 	rejectedCap uint64
 }
 
+// recordKey identifies one slot within a topic. Key == "" is the classical
+// single-slot-per-node form. Comparable, so it is used directly as a map key.
+type recordKey struct {
+	NodeID NodeID
+	Key    string
+}
+
+// keyOf projects a record onto its store slot.
+func keyOf(r Record) recordKey { return recordKey{NodeID: r.NodeID, Key: r.Key} }
+
+// nodeSlots returns every slot key a node currently holds on this topic, in
+// canonical order. Observer death is a per-NODE fact, so the attestation path
+// works through this rather than a single slot.
+//
+// Callers hold the store lock.
+func (ts *topicStore) nodeSlots(node NodeID) []recordKey {
+	var out []recordKey
+	for k := range ts.records {
+		if k.NodeID == node {
+			out = append(out, k)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return lessRecordKey(out[i], out[j]) })
+	return out
+}
+
+// nodeDeadAtOrAbove reports whether the node holds any slot on this topic
+// (had), and whether EVERY slot it holds is tombstoned with HLC >= hlc
+// (allDead). A node with one live slot is not dead, however many of its
+// other slots are tombstoned.
+//
+// Callers hold the store lock.
+func (ts *topicStore) nodeDeadAtOrAbove(node NodeID, hlc uint64) (had, allDead bool) {
+	allDead = true
+	for k, r := range ts.records {
+		if k.NodeID != node {
+			continue
+		}
+		had = true
+		if !r.Tombstone || r.HLC < hlc {
+			allDead = false
+		}
+	}
+	return had, had && allDead
+}
+
+// nodePresent reports whether the node holds any slot on this topic.
+//
+// Callers hold the store lock.
+func (ts *topicStore) nodePresent(node NodeID) bool {
+	for k := range ts.records {
+		if k.NodeID == node {
+			return true
+		}
+	}
+	return false
+}
+
+// lessRecordKey is the canonical slot ordering: NodeID first, then Key. Every
+// deterministic traversal (Merkle root, range collection, replay) uses it, so
+// two stores holding the same slot set always visit them in the same order.
+func lessRecordKey(a, b recordKey) bool {
+	if a.NodeID != b.NodeID {
+		return a.NodeID < b.NodeID
+	}
+	return a.Key < b.Key
+}
+
 type topicStore struct {
-	// records[nodeID] = latest record from that node on this topic
-	records map[NodeID]Record
+	// records[(nodeID,key)] = latest record from that node on this topic
+	// under that key. Key "" is the node's classical single slot.
+	records map[recordKey]Record
 
 	// attestations[target][observer] = most recent observer attestation
 	// for the target's record. Pruned when ObservedAtUnixMs falls outside
@@ -94,17 +180,20 @@ func newRecordStore() *recordStore {
 		observerCorroborationWindow: DefaultObserverCorroborationWindow,
 		nowFn:                       time.Now,
 	}
-	s.setCaps(0, 0, 0)
+	s.setCaps(0, 0, 0, 0)
 	return s
 }
 
 // setCaps installs the cardinality caps, applying defaults for zero values.
-func (s *recordStore) setCaps(maxTopics, maxRecordsPerTopic, maxAttestations int) {
+func (s *recordStore) setCaps(maxTopics, maxRecordsPerTopic, maxKeysPerNode, maxAttestations int) {
 	if maxTopics <= 0 {
 		maxTopics = 4096
 	}
 	if maxRecordsPerTopic <= 0 {
 		maxRecordsPerTopic = 65536
+	}
+	if maxKeysPerNode <= 0 {
+		maxKeysPerNode = DefaultMaxKeysPerNodePerTopic
 	}
 	if maxAttestations <= 0 {
 		maxAttestations = 64
@@ -113,6 +202,7 @@ func (s *recordStore) setCaps(maxTopics, maxRecordsPerTopic, maxAttestations int
 	defer s.mu.Unlock()
 	s.maxTopics = maxTopics
 	s.maxRecordsPerTopic = maxRecordsPerTopic
+	s.maxKeysPerNode = maxKeysPerNode
 	s.maxAttestations = maxAttestations
 }
 
@@ -184,7 +274,7 @@ func (s *recordStore) ApplyExt(r Record) (applied bool, replaced bool, accumulat
 			return false, false, false
 		}
 		ts = &topicStore{
-			records:          make(map[NodeID]Record),
+			records:          make(map[recordKey]Record),
 			attestations:     make(map[NodeID]map[NodeID]Record),
 			restoredAtUnixMs: make(map[NodeID]int64),
 		}
@@ -199,16 +289,36 @@ func (s *recordStore) ApplyExt(r Record) (applied bool, replaced bool, accumulat
 	// Owner-signed record (or classical owner tombstone) — standard
 	// HLC-max CRDT merge. A live owner re-publish with HLC > any
 	// observer-synthesised tombstone auto-restores via this path.
-	cur, had := ts.records[r.NodeID]
+	slot := keyOf(r)
+	cur, had := ts.records[slot]
 	if !had {
 		// Cardinality cap: reject NEW slots beyond MaxRecordsPerTopic
 		// (updates to existing slots always pass — convergence on known
-		// state must never be blocked by the cap).
+		// state must never be blocked by the cap). With composite keys the
+		// cap counts SLOTS, not nodes, so it now also bounds how many keys
+		// one node may open on a topic.
 		if len(ts.records) >= s.maxRecordsPerTopic {
 			s.rejectedCap++
 			return false, false, false
 		}
-		ts.records[r.NodeID] = r
+		// Per-node slot cap. Composite keys let one node open many slots, so
+		// without this a single publisher could consume the whole per-topic
+		// budget and crowd out every honest peer — an amplification the
+		// one-slot-per-node store could not express. Counted only for NEW
+		// slots, so updates to a node's existing keys always converge.
+		if s.maxKeysPerNode > 0 {
+			held := 0
+			for k := range ts.records {
+				if k.NodeID == r.NodeID {
+					held++
+				}
+			}
+			if held >= s.maxKeysPerNode {
+				s.rejectedCap++
+				return false, false, false
+			}
+		}
+		ts.records[slot] = r
 		// First-time owner record: stamp the restored-at high-water-mark
 		// so any in-flight attestations that were issued before this
 		// moment are rejected. Without this fence a peer that was
@@ -223,7 +333,7 @@ func (s *recordStore) ApplyExt(r Record) (applied bool, replaced bool, accumulat
 	replaced = true
 
 	if r.HLC > cur.HLC || (r.HLC == cur.HLC && sigLess(cur.Sig, r.Sig)) {
-		ts.records[r.NodeID] = r
+		ts.records[slot] = r
 		// A fresh owner publish supersedes any synthesised tombstone.
 		// Clear stale attestations for this target so a future death
 		// detection starts from an empty witness set (otherwise a
@@ -283,10 +393,14 @@ func (s *recordStore) applyAttestationLocked(ts *topicStore, att Record) (applie
 		return false, false, false
 	}
 
-	// If the target already has a tombstone (owner-emitted or previously
-	// synthesised) with HLC >= this attestation's HLC, the attestation is
-	// redundant. Don't pollute the witness set.
-	if cur, had := ts.records[att.NodeID]; had && cur.Tombstone && cur.HLC >= att.HLC {
+	// If the target is ALREADY fully dead at or above this attestation's HLC,
+	// the attestation is redundant. Don't pollute the witness set.
+	//
+	// "Fully" is load-bearing under composite keys: a node with a tombstoned
+	// `metrics` key and a live `latency` key is not dead, and treating it as
+	// redundant here would drop the witness that still needs to reap the live
+	// slot. Only a node whose every slot is tombstoned qualifies.
+	if had, allDead := ts.nodeDeadAtOrAbove(att.NodeID, att.HLC); had && allDead {
 		return false, true, false
 	}
 
@@ -347,7 +461,7 @@ func (s *recordStore) applyAttestationLocked(ts *topicStore, att Record) (applie
 		// accumulated=true: this attestation was fresh (it set or
 		// superseded its observer slot) — the dissemination layer must
 		// relay it so OTHER nodes can count it toward THEIR quorum.
-		return false, ts.records[att.NodeID].HLC != 0, true
+		return false, ts.nodePresent(att.NodeID), true
 	}
 
 	// Synthesise the tombstone. HLC = max(attestation HLCs) + 1 so it
@@ -375,17 +489,33 @@ func (s *recordStore) applyAttestationLocked(ts *topicStore, att Record) (applie
 		// record a receiver would reject.
 	}
 
-	cur, had := ts.records[att.NodeID]
-	if !had || synth.HLC > cur.HLC {
-		ts.records[att.NodeID] = synth
-		// Keep the attestation set around: a target that re-publishes
-		// MUST cross synth.HLC to restore; the set's role is fully
-		// served once synth is recorded, but it's harmless to retain
-		// (and cheap to drop on next live publish via Apply's
-		// delete-on-overwrite).
-		return true, had, true
+	// The node is dead, so EVERY slot it holds on this topic dies — one
+	// synthesised tombstone per key, each carrying its slot's Key so it
+	// lands in that slot rather than collapsing them all onto "".
+	// A node we hold no records for still gets the classical keyless
+	// tombstone, so a death observed before any record arrives is recorded
+	// exactly as it was pre-composite-key.
+	slots := ts.nodeSlots(att.NodeID)
+	had := len(slots) > 0
+	if !had {
+		ts.records[recordKey{NodeID: att.NodeID}] = synth
+		return true, false, true
 	}
-	return false, had, true
+	applied = false
+	for _, k := range slots {
+		if cur := ts.records[k]; synth.HLC > cur.HLC {
+			tomb := synth
+			tomb.Key = k.Key
+			ts.records[k] = tomb
+			applied = true
+		}
+	}
+	// Keep the attestation set around: a target that re-publishes
+	// MUST cross synth.HLC to restore; the set's role is fully
+	// served once synth is recorded, but it's harmless to retain
+	// (and cheap to drop on next live publish via Apply's
+	// delete-on-overwrite).
+	return applied, true, true
 }
 
 // Get returns the current LIVE record for (topic, node). Honouring the
@@ -394,29 +524,69 @@ func (s *recordStore) applyAttestationLocked(ts *topicStore, att Record) (applie
 // mutate them without corrupting the store. (The gossip/merkle engines use
 // getRaw, which sees tombstones.)
 func (s *recordStore) Get(topic Topic, node NodeID) (Record, bool) {
+	return s.GetKeyed(topic, node, "")
+}
+
+// GetKeyed is Get for a specific slot of a node. key "" is the classical
+// single slot, so Get(topic, node) == GetKeyed(topic, node, "").
+func (s *recordStore) GetKeyed(topic Topic, node NodeID, key string) (Record, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	ts, ok := s.byTopic[topic]
 	if !ok {
 		return Record{}, false
 	}
-	r, ok := ts.records[node]
+	r, ok := ts.records[recordKey{NodeID: node, Key: key}]
 	if !ok || r.Tombstone {
 		return Record{}, false
 	}
 	return cloneRecord(r), true
 }
 
+// NodeRecords returns every LIVE record a node holds on a topic, in
+// canonical slot order, with defensively-copied byte slices. This is the
+// composite-key read: one node's full set of per-key records (its latency
+// observations, its content holdings) rather than a single slot.
+func (s *recordStore) NodeRecords(topic Topic, node NodeID) []Record {
+	s.mu.RLock()
+	ts, ok := s.byTopic[topic]
+	if !ok {
+		s.mu.RUnlock()
+		return nil
+	}
+	var keys []recordKey
+	for k, r := range ts.records {
+		if k.NodeID == node && !r.Tombstone {
+			keys = append(keys, k)
+		}
+	}
+	sort.Slice(keys, func(i, j int) bool { return lessRecordKey(keys[i], keys[j]) })
+	out := make([]Record, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, cloneRecord(ts.records[k]))
+	}
+	s.mu.RUnlock()
+	return out
+}
+
 // getRaw returns the slot as stored — tombstones included, slices shared.
 // Engine-internal (IHave freshness, graft replies).
 func (s *recordStore) getRaw(topic Topic, node NodeID) (Record, bool) {
+	return s.getRawKeyed(topic, node, "")
+}
+
+// getRawKeyed is getRaw for a specific slot. The lazy-push path MUST use
+// this: an IHave/Graft names the slot it is about, and comparing it against
+// the node's keyless slot would both re-graft records we already hold and
+// serve the wrong record back.
+func (s *recordStore) getRawKeyed(topic Topic, node NodeID, key string) (Record, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	ts, ok := s.byTopic[topic]
 	if !ok {
 		return Record{}, false
 	}
-	r, ok := ts.records[node]
+	r, ok := ts.records[recordKey{NodeID: node, Key: key}]
 	return r, ok
 }
 
@@ -460,7 +630,11 @@ func (s *recordStore) topicRecordsWhere(topic Topic, keep func(Record) bool) []R
 			out = append(out, r)
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].NodeID < out[j].NodeID })
+	// Canonical order is (NodeID, Key) — with composite keys, sorting by
+	// NodeID alone leaves the order of one node's slots at Go's map
+	// iteration nondeterminism, which would make the Merkle root of two
+	// identical stores differ run to run.
+	sort.Slice(out, func(i, j int) bool { return lessRecordKey(keyOf(out[i]), keyOf(out[j])) })
 	return out
 }
 
@@ -509,13 +683,22 @@ func (s *recordStore) reapExpired(nowMs int64, ttlFor func(Topic) time.Duration)
 			continue
 		}
 		ttlMs := ttl.Milliseconds()
-		for node, r := range ts.records {
+		for slot, r := range ts.records {
 			wallMs, _ := Decompose(r.HLC)
 			ageMs := nowMs - int64(wallMs)
 			if (!r.Tombstone && ageMs > ttlMs) || (r.Tombstone && ageMs > 2*ttlMs) {
-				delete(ts.records, node)
-				delete(ts.restoredAtUnixMs, node)
+				delete(ts.records, slot)
 				dropped++
+			}
+		}
+		// The restored-at high-water-mark is per-NODE, so it may only be
+		// dropped once the node has no slots left. Deleting it alongside
+		// any single expiring slot would unfence a node that still holds
+		// live records, letting a stale pre-restore attestation back into
+		// its witness set.
+		for node := range ts.restoredAtUnixMs {
+			if !ts.nodePresent(node) {
+				delete(ts.restoredAtUnixMs, node)
 			}
 		}
 		if len(ts.records) == 0 && len(ts.attestations) == 0 {
