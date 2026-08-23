@@ -4,6 +4,7 @@
 package swarm
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"encoding/binary"
 )
@@ -14,7 +15,8 @@ import (
 // Layout:
 //   topic_len:u16 || topic || node_id || hlc:u64 || tombstone:u8 ||
 //   body_len:u32 || body || pub_key ||
-//   observer_node_id_len:u16 || observer_node_id || observed_at_ms:i64
+//   observer_node_id_len:u16 || observer_node_id || observed_at_ms:i64 ||
+//   [ key_len:u16 || key ]      <- emitted ONLY when Key != ""
 //
 // PubKey is included so a forger cannot rebind a valid sig to a different
 // PubKey claim (which would otherwise let a publisher impersonate any
@@ -30,14 +32,38 @@ import (
 // differs even when both suffix fields are empty/zero — the encoding is
 // always written by the signer).
 //
+// Key is appended LAST and CONDITIONALLY — the two-byte length prefix and
+// the key bytes are emitted only when Key != "". This is deliberate and is
+// the opposite of the observer-field choice above: appending it
+// unconditionally would add two zero bytes to every record and invalidate
+// every signature in the fleet, forcing a coordinated fresh-mesh redeploy.
+// Emitting nothing for Key == "" makes the canonical bytes of every
+// pre-composite-key record BYTE-IDENTICAL to what they were, so no signed
+// record ever stops verifying.
+//
+// The conditional suffix is still unambiguous, which is what makes it safe:
+// topic and body are length-prefixed and node_id / pub_key are fixed-length,
+// so the legacy layout has a determined end. A keyed record's bytes are a
+// legacy prefix plus extra trailing bytes and therefore cannot collide with
+// any legacy record's bytes. Both substitutions are caught because the
+// verifier recomputes this encoding from the record it actually received:
+// re-labelling a keyless record with a key appends a suffix the signer never
+// signed, and stripping a key removes one the signer did — either way Sig
+// fails. That closes record relocation, e.g. promoting one peer-scoped
+// latency observation into the node's canonical keyless slot.
+//
 // This is a STABLE serialization independent of proto wire format —
 // signature validity does not depend on protobuf encoding quirks.
 func signableBytes(r Record) []byte {
 	topic := []byte(r.Topic)
 	observer := []byte(r.ObserverNodeID)
-	buf := make([]byte, 0,
-		2+len(topic)+len(r.NodeID)+8+1+4+len(r.Body)+len(r.PubKey)+
-			2+len(observer)+8)
+	key := []byte(r.Key)
+	n := 2 + len(topic) + len(r.NodeID) + 8 + 1 + 4 + len(r.Body) + len(r.PubKey) +
+		2 + len(observer) + 8
+	if len(key) > 0 {
+		n += 2 + len(key)
+	}
+	buf := make([]byte, 0, n)
 
 	var tlen [2]byte
 	binary.BigEndian.PutUint16(tlen[:], uint16(len(topic)))
@@ -71,6 +97,16 @@ func signableBytes(r Record) []byte {
 	var oat [8]byte
 	binary.BigEndian.PutUint64(oat[:], uint64(r.ObservedAtUnixMs))
 	buf = append(buf, oat[:]...)
+
+	// Conditional composite-key suffix — see the layout note above. Nothing
+	// is emitted for Key == "", which is what keeps every pre-existing
+	// signature valid.
+	if len(key) > 0 {
+		var klen [2]byte
+		binary.BigEndian.PutUint16(klen[:], uint16(len(key)))
+		buf = append(buf, klen[:]...)
+		buf = append(buf, key...)
+	}
 
 	return buf
 }
@@ -201,4 +237,45 @@ func hexNibble(c byte) (byte, bool) {
 	default:
 		return 0, false
 	}
+}
+
+// VerifyRecord reports whether r carries a valid owner signature, binding the
+// signature to the NodeID that claims the slot.
+//
+// 🔑 THIS IS THE PACKAGE'S ONLY EXPORTED WAY TO CHECK A RECORD, AND IT IS
+// DELIBERATELY STRICTER THAN THE INTERNAL PATH.
+//
+// The internal call sites (merkle.go, plumtrees.go) verify with
+// ed25519.PublicKey(rec.PubKey) — the key the RECORD ITSELF SUPPLIES. That
+// establishes the record is internally consistent and NOTHING about who sent
+// it: an attacker signs with their own key and writes any NodeID they like
+// into the slot. Closing that is what RequireNodeKeyBinding is for, and it is
+// off by default.
+//
+// An exported verifier cannot depend on a gate the caller may not have wired,
+// so this one derives the key FROM THE NODEID (the NodeID encoding is
+// hex(pubkey)) and the bind therefore holds BY CONSTRUCTION. A record signed
+// by one keypair while claiming another node's slot fails here even when the
+// internal path accepts it.
+//
+// Fails closed in every ambiguous case: an unparseable NodeID cannot be bound
+// to a key and is UNVERIFIABLE, which is never the same as verified; and a
+// PubKey field disagreeing with the NodeID is rejected rather than resolved in
+// favour of either.
+//
+// It exists because preserving a signature is not the same as being able to
+// check one: the directory projection carries Signature/PubKey/Body
+// byte-identically, and before this every consumer outside the package held a
+// valid signature it had no way to verify — forcing it to trust the relaying
+// node, which the Phase-0.5 plan explicitly rejects ("observer facts remain
+// explicitly third-party attestations").
+func VerifyRecord(r Record) bool {
+	pub, ok := pubFromNodeID(r.NodeID)
+	if !ok {
+		return false
+	}
+	if len(r.PubKey) != 0 && !bytes.Equal(r.PubKey, pub) {
+		return false
+	}
+	return verifyRecord(r, pub)
 }
