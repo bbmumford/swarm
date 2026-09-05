@@ -440,7 +440,7 @@ func TestSetTenantTombstoneReachesPeers(t *testing.T) {
 		t.Fatal("record never reached B")
 	}
 
-	// Pre-hardening: the tenant-rebind tombstone was applied locally then
+	// Pre-hardening: the partition-rebind tombstone was applied locally then
 	// routed through Publish, whose second Apply returned applied=false —
 	// so it NEVER hit the wire and peers kept the stale record forever.
 	if err := a.node.SetTenant("tenant-1"); err != nil {

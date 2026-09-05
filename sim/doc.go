@@ -2,7 +2,7 @@
 // Queries: licensing@hstles.com
 
 // Package sim provides a deterministic network simulator for the swarm
-// engine. It is the test bed for the swarm core, role/tenant/pause hooks,
+// engine. It is the test bed for the swarm core, role/partition/pause hooks,
 // ContentTopic + chunked transfer, distributed-state topics, and edge
 // roles.
 //
