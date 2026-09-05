@@ -19,7 +19,7 @@ import (
 
 // topicContentAdvert is the swarm topic carrying ContentAdvert records
 // for the fleet fabric. Agent-fabric ContentTopic instances use
-// AgentContentAdvertTopic(tenantID) — selected per SwarmIntegration in
+// AgentContentAdvertTopic(partitionID) — selected per SwarmIntegration in
 // the agent layer.
 const topicContentAdvert = FleetContentAdvertTopic
 

@@ -43,18 +43,18 @@ type nodeImpl struct {
 	// checks before it can reach the store. Built in Wire from Config.
 	gate *inboundGate
 
-	// Atomic role/tenant
+	// Atomic role/partition
 	role   atomic.Uint32 // Role
-	tenant atomic.Value  // string
+	partition atomic.Value  // string
 
 	// Pause/Resume hooks
 	onPaused  func()
 	onResumed func()
 
-	// Role/tenant change hooks
+	// Role/partition change hooks
 	rolesMu        sync.Mutex
 	onRoleChange   []func(prev, next Role)
-	tenantMu       sync.Mutex
+	partitionMu       sync.Mutex
 	onTenantChange []func(prev, next string)
 
 	// Transport — set on Start via Wire().
@@ -92,7 +92,7 @@ func New(cfg Config) (Node, error) {
 	if cfg.NowFn != nil {
 		n.store.SetNowFn(cfg.NowFn)
 	}
-	n.tenant.Store("")
+	n.partition.Store("")
 	return n, nil
 }
 
@@ -492,10 +492,10 @@ func (n *nodeImpl) SetRole(role Role) error {
 	return nil
 }
 
-func (n *nodeImpl) SetTenant(tenantID string) error {
-	prevAny := n.tenant.Swap(tenantID)
+func (n *nodeImpl) SetTenant(partitionID string) error {
+	prevAny := n.partition.Swap(partitionID)
 	prev, _ := prevAny.(string)
-	if prev == tenantID {
+	if prev == partitionID {
 		return nil
 	}
 
@@ -540,11 +540,11 @@ func (n *nodeImpl) SetTenant(tenantID string) error {
 		}
 	}
 
-	n.tenantMu.Lock()
+	n.partitionMu.Lock()
 	for _, fn := range n.onTenantChange {
-		fn(prev, tenantID)
+		fn(prev, partitionID)
 	}
-	n.tenantMu.Unlock()
+	n.partitionMu.Unlock()
 	return nil
 }
 
@@ -558,8 +558,8 @@ func (n *nodeImpl) OnRoleChange(fn func(prev, next Role)) {
 
 // OnTenantChange registers a callback invoked when SetTenant succeeds.
 func (n *nodeImpl) OnTenantChange(fn func(prev, next string)) {
-	n.tenantMu.Lock()
-	defer n.tenantMu.Unlock()
+	n.partitionMu.Lock()
+	defer n.partitionMu.Unlock()
 	n.onTenantChange = append(n.onTenantChange, fn)
 }
 
@@ -609,9 +609,9 @@ func (n *nodeImpl) SetObserverQuorum(k int, w time.Duration) {
 	n.store.SetObserverQuorum(k, w)
 }
 
-// Tenant returns the current tenant ID.
+// Tenant returns the current partition ID.
 func (n *nodeImpl) Tenant() string {
-	v, _ := n.tenant.Load().(string)
+	v, _ := n.partition.Load().(string)
 	return v
 }
 

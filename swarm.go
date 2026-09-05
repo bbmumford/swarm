@@ -13,7 +13,7 @@ import (
 // NodeID is an opaque per-peer identifier (Ed25519 public key hex-encoded).
 type NodeID string
 
-// Topic is a tenant- and network-scoped topic identifier.
+// Topic is a partition- and network-scoped topic identifier.
 // Conventions:
 //   - Fleet: "fleet.peer", "fleet.latency", "fleet.anchor-snapshot"
 //   - Agent: "agent.peer.<tenantID>.<networkID>", "agent.policy.<tenantID>", etc.
@@ -157,7 +157,7 @@ type Config struct {
 	// record BEFORE it can mutate the store (eager push, graft reply, and
 	// merkle range paths). Return a non-nil error to reject the record.
 	// This is the swarm-side enforcement point for an application
-	// TrustPolicy (NodeID↔key binding beyond the hex scheme, tenant/topic
+	// TrustPolicy (NodeID↔key binding beyond the hex scheme, partition/topic
 	// authorization, role entitlement, revocation). nil = accept (the
 	// pre-hardening behaviour).
 	TrustCheck func(Record) error
@@ -390,7 +390,7 @@ type Node interface {
 	NodeRecords(topic Topic, node NodeID) []Record
 
 	// TopicRecords returns a snapshot of every live record on a topic.
-	// Consumers build typed, tenant-scoped projections (members, reach,
+	// Consumers build typed, partition-scoped projections (members, reach,
 	// roles) on top of this — it is the query surface that lets the swarm
 	// store back a directory the way ledger's DirectoryCache used to.
 	TopicRecords(topic Topic) []Record

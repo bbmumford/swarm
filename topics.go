@@ -5,8 +5,8 @@ package swarm
 
 // Topic naming conventions
 //
-// "fleet.*"          → HSTLES fleet fabric (shared across all tenants)
-// "agent.*.<tenant>" → agent fabric, tenant-scoped per multi-tenancy plan
+// "fleet.*"          → HSTLES fleet fabric (shared across all partitions)
+// "agent.*.<tenant>" → agent fabric, partition-scoped per multi-tenancy plan
 // "agent.*.<channel>" → agent fabric, channel-scoped (TUF stable|beta|canary)
 //
 // Each helper returns a swarm.Topic typed string. Subscribers register
@@ -26,161 +26,161 @@ const FleetContentAdvertTopic Topic = "fleet.content.advert"
 // ---------- Agent fabric topics: distribution manifests ----------
 
 // AgentPolicyTopic returns the policy-epoch propagation topic scoped to
-// the given tenant.
-func AgentPolicyTopic(tenantID string) Topic { return Topic("agent.policy." + tenantID) }
+// the given partition.
+func AgentPolicyTopic(partitionID string) Topic { return Topic("agent.policy." + partitionID) }
 
 // AgentTrustTopic returns the RD-epoch propagation topic scoped to the
-// given tenant.
-func AgentTrustTopic(tenantID string) Topic { return Topic("agent.trust." + tenantID) }
+// given partition.
+func AgentTrustTopic(partitionID string) Topic { return Topic("agent.trust." + partitionID) }
 
 // AgentKeysTopic carries KeyRotationEnvelope records.
-func AgentKeysTopic(tenantID string) Topic { return Topic("agent.keys." + tenantID) }
+func AgentKeysTopic(partitionID string) Topic { return Topic("agent.keys." + partitionID) }
 
 // AgentBlocklistsTopic carries BlocklistManifest records.
-func AgentBlocklistsTopic(tenantID string) Topic { return Topic("agent.blocklists." + tenantID) }
+func AgentBlocklistsTopic(partitionID string) Topic { return Topic("agent.blocklists." + partitionID) }
 
 // AgentAssetsTopic carries AssetManifest records (admin-uploaded files).
-func AgentAssetsTopic(tenantID string) Topic { return Topic("agent.assets." + tenantID) }
+func AgentAssetsTopic(partitionID string) Topic { return Topic("agent.assets." + partitionID) }
 
 // AgentRulesTopic carries RuleManifest records for the given rule type
 // ("yara" | "capa" | "sigma" | "flirt").
-func AgentRulesTopic(tenantID, ruleType string) Topic {
-	return Topic("agent.rules." + tenantID + "." + ruleType)
+func AgentRulesTopic(partitionID, ruleType string) Topic {
+	return Topic("agent.rules." + partitionID + "." + ruleType)
 }
 
 // AgentDriversTopic carries DriverManifest records for the given
 // platform ("windows" | "macos" | "linux").
-func AgentDriversTopic(tenantID, platform string) Topic {
-	return Topic("agent.drivers." + tenantID + "." + platform)
+func AgentDriversTopic(partitionID, platform string) Topic {
+	return Topic("agent.drivers." + partitionID + "." + platform)
 }
 
 // AgentVouchersTopic carries VoucherManifest records (offline enrollment).
-func AgentVouchersTopic(tenantID string) Topic { return Topic("agent.vouchers." + tenantID) }
+func AgentVouchersTopic(partitionID string) Topic { return Topic("agent.vouchers." + partitionID) }
 
 // AgentTUFMetaTopic carries TUFManifest records for the given release
-// channel ("stable" | "beta" | "canary"). Not tenant-scoped — the same
-// binaries flow to every tenant on the same channel.
+// channel ("stable" | "beta" | "canary"). Not partition-scoped — the same
+// binaries flow to every partition on the same channel.
 func AgentTUFMetaTopic(channel string) Topic { return Topic("agent.tuf-meta." + channel) }
 
 // AgentFIMBaselinesTopic carries FIMBaselineManifest records keyed by
 // the SHA256 of the monitored path.
-func AgentFIMBaselinesTopic(tenantID, pathHashHex string) Topic {
-	return Topic("agent.fim-baselines." + tenantID + "." + pathHashHex)
+func AgentFIMBaselinesTopic(partitionID, pathHashHex string) Topic {
+	return Topic("agent.fim-baselines." + partitionID + "." + pathHashHex)
 }
 
 // AgentOSQueryPacksTopic carries OSQueryPackManifest records.
-func AgentOSQueryPacksTopic(tenantID string) Topic { return Topic("agent.osquery-packs." + tenantID) }
+func AgentOSQueryPacksTopic(partitionID string) Topic { return Topic("agent.osquery-packs." + partitionID) }
 
 // AgentLiveQueryCacheTopic carries LiveQueryResultManifest records
 // (opt-in cache of recent live-query results).
-func AgentLiveQueryCacheTopic(tenantID string) Topic {
-	return Topic("agent.livequery-cache." + tenantID)
+func AgentLiveQueryCacheTopic(partitionID string) Topic {
+	return Topic("agent.livequery-cache." + partitionID)
 }
 
 // AgentForensicIndexTopic carries ForensicIndex records (artifact
 // hashes only; raw bytes stay local for privacy).
-func AgentForensicIndexTopic(tenantID string) Topic {
-	return Topic("agent.forensic-index." + tenantID)
+func AgentForensicIndexTopic(partitionID string) Topic {
+	return Topic("agent.forensic-index." + partitionID)
 }
 
-// AgentContentAdvertTopic is the per-tenant content advert topic.
+// AgentContentAdvertTopic is the per-partition content advert topic.
 // Holders publish ContentAdvert records here; fetchers index them and
 // route Fetch / FetchBlob calls to the named holders.
-func AgentContentAdvertTopic(tenantID string) Topic {
-	return Topic("agent.content.advert." + tenantID)
+func AgentContentAdvertTopic(partitionID string) Topic {
+	return Topic("agent.content.advert." + partitionID)
 }
 
 // ---------- Agent fabric topics: operational state ----------
 
 // AgentDDNSTopic carries DDNSRecord records.
-func AgentDDNSTopic(tenantID string) Topic { return Topic("agent.ddns." + tenantID) }
+func AgentDDNSTopic(partitionID string) Topic { return Topic("agent.ddns." + partitionID) }
 
 // AgentQuarantineTopic carries QuarantineNotice records.
-func AgentQuarantineTopic(tenantID string) Topic { return Topic("agent.quarantine." + tenantID) }
+func AgentQuarantineTopic(partitionID string) Topic { return Topic("agent.quarantine." + partitionID) }
 
 // AgentDHCPTopic carries DHCPLeaseRecord records scoped to a segment.
-func AgentDHCPTopic(tenantID, segment string) Topic {
-	return Topic("agent.dhcp." + tenantID + "." + segment)
+func AgentDHCPTopic(partitionID, segment string) Topic {
+	return Topic("agent.dhcp." + partitionID + "." + segment)
 }
 
 // AgentDiscoveredAssetsTopic carries DiscoveredAsset records.
-func AgentDiscoveredAssetsTopic(tenantID string) Topic {
-	return Topic("agent.discovered-assets." + tenantID)
+func AgentDiscoveredAssetsTopic(partitionID string) Topic {
+	return Topic("agent.discovered-assets." + partitionID)
 }
 
 // AgentPrintersTopic carries PrinterRecord records (deduplicated
 // printer inventory).
-func AgentPrintersTopic(tenantID string) Topic { return Topic("agent.printers." + tenantID) }
+func AgentPrintersTopic(partitionID string) Topic { return Topic("agent.printers." + partitionID) }
 
 // AgentServiceStateTopic carries ServiceStateRecord records.
-func AgentServiceStateTopic(tenantID string) Topic { return Topic("agent.service-state." + tenantID) }
+func AgentServiceStateTopic(partitionID string) Topic { return Topic("agent.service-state." + partitionID) }
 
 // AgentInventoryDeltasTopic carries InventoryDelta records.
-func AgentInventoryDeltasTopic(tenantID string) Topic {
-	return Topic("agent.inventory-deltas." + tenantID)
+func AgentInventoryDeltasTopic(partitionID string) Topic {
+	return Topic("agent.inventory-deltas." + partitionID)
 }
 
 // ---------- Agent fabric topics: security-critical ----------
 
 // AgentRevokedKeysTopic carries RevocationNotice records.
-func AgentRevokedKeysTopic(tenantID string) Topic { return Topic("agent.revoked-keys." + tenantID) }
+func AgentRevokedKeysTopic(partitionID string) Topic { return Topic("agent.revoked-keys." + partitionID) }
 
 // AgentNetworkPSKTopic carries NetworkPSKRotation records scoped to an
 // epoch.
-func AgentNetworkPSKTopic(tenantID string, epoch uint64) Topic {
-	return Topic("agent.network-psk." + tenantID + "." + uint64ToDec(epoch))
+func AgentNetworkPSKTopic(partitionID string, epoch uint64) Topic {
+	return Topic("agent.network-psk." + partitionID + "." + uint64ToDec(epoch))
 }
 
 // AgentTrustPinsTopic carries TrustPinUpdate records.
-func AgentTrustPinsTopic(tenantID string) Topic { return Topic("agent.trust-pins." + tenantID) }
+func AgentTrustPinsTopic(partitionID string) Topic { return Topic("agent.trust-pins." + partitionID) }
 
 // AgentTLSPinsTopic carries TLSPinTOFU records per domain.
-func AgentTLSPinsTopic(tenantID, domain string) Topic {
-	return Topic("agent.tls-pins." + tenantID + "." + domain)
+func AgentTLSPinsTopic(partitionID, domain string) Topic {
+	return Topic("agent.tls-pins." + partitionID + "." + domain)
 }
 
 // AgentIntegrityAlertTopic carries IntegrityAlert records.
-func AgentIntegrityAlertTopic(tenantID string) Topic {
-	return Topic("agent.integrity-alert." + tenantID)
+func AgentIntegrityAlertTopic(partitionID string) Topic {
+	return Topic("agent.integrity-alert." + partitionID)
 }
 
 // ---------- Agent fabric topics: multi-session / multi-device ----------
 
 // AgentSessionTopic carries SessionRecord records scoped to a device.
-func AgentSessionTopic(tenantID, deviceID string) Topic {
-	return Topic("agent.session." + tenantID + "." + deviceID)
+func AgentSessionTopic(partitionID, deviceID string) Topic {
+	return Topic("agent.session." + partitionID + "." + deviceID)
 }
 
 // AgentConsentTopic carries ConsentRecord records keyed by user.
-func AgentConsentTopic(tenantID, userID string) Topic {
-	return Topic("agent.consent." + tenantID + "." + userID)
+func AgentConsentTopic(partitionID, userID string) Topic {
+	return Topic("agent.consent." + partitionID + "." + userID)
 }
 
 // AgentRemoteSessionsTopic carries RemoteSessionRecord records.
-func AgentRemoteSessionsTopic(tenantID string) Topic {
-	return Topic("agent.remote-sessions." + tenantID)
+func AgentRemoteSessionsTopic(partitionID string) Topic {
+	return Topic("agent.remote-sessions." + partitionID)
 }
 
 // AgentTunnelsTopic carries TunnelEndpoint records.
-func AgentTunnelsTopic(tenantID string) Topic { return Topic("agent.tunnels." + tenantID) }
+func AgentTunnelsTopic(partitionID string) Topic { return Topic("agent.tunnels." + partitionID) }
 
 // ---------- Agent fabric topics: telemetry / observability ----------
 
 // AgentHealthTopic carries HealthSummary records (the distinct gossip
 // summary; the point-to-point "agent.mesh.Health" RPC is separate).
-func AgentHealthTopic(tenantID string) Topic { return Topic("agent.health." + tenantID) }
+func AgentHealthTopic(partitionID string) Topic { return Topic("agent.health." + partitionID) }
 
 // AgentEventTopic carries EventRecord records scoped to a type.
-func AgentEventTopic(tenantID, eventType string) Topic {
-	return Topic("agent.event." + tenantID + "." + eventType)
+func AgentEventTopic(partitionID, eventType string) Topic {
+	return Topic("agent.event." + partitionID + "." + eventType)
 }
 
 // AgentThreatSignalTopic carries ThreatSignal records.
-func AgentThreatSignalTopic(tenantID string) Topic { return Topic("agent.threat-signal." + tenantID) }
+func AgentThreatSignalTopic(partitionID string) Topic { return Topic("agent.threat-signal." + partitionID) }
 
 // AgentDNSCacheTopic carries DNSCacheEntry records (privacy-aware
 // opt-in).
-func AgentDNSCacheTopic(tenantID string) Topic { return Topic("agent.dns-cache." + tenantID) }
+func AgentDNSCacheTopic(partitionID string) Topic { return Topic("agent.dns-cache." + partitionID) }
 
 // ---------- Edge service roles ----------
 //

@@ -14,7 +14,7 @@ import (
 )
 
 // TestSetTenantTombstonesSelfRecords verifies SetTenant tombstones every
-// pre-tenant record published by this node.
+// pre-partition record published by this node.
 func TestSetTenantTombstonesSelfRecords(t *testing.T) {
 	_, priv, _ := ed25519.GenerateKey(rand.Reader)
 	cfg := swarm.Config{
@@ -34,7 +34,7 @@ func TestSetTenantTombstonesSelfRecords(t *testing.T) {
 	go node.Start(context.Background())
 	defer node.Stop()
 
-	// Publish a record pre-tenant
+	// Publish a record pre-partition
 	if err := node.Publish("test", []byte("pre-tenant body")); err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +43,7 @@ func TestSetTenantTombstonesSelfRecords(t *testing.T) {
 		t.Fatalf("expected 1 record pre-tenant, got %d", store.TopicCount("test"))
 	}
 
-	// Set tenant — should tombstone the existing record
+	// Set partition — should tombstone the existing record
 	if err := node.SetTenant("acme-corp"); err != nil {
 		t.Fatal(err)
 	}

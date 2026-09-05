@@ -6,10 +6,10 @@
 // the HSTLES fleet mesh and the ORBTR agent mesh.
 //
 // The package exposes a single Node type whose API surface covers:
-//   - Subscribe/Publish on tenant-scoped topics
+//   - Subscribe/Publish on partition-scoped topics
 //   - PerPeerConfig: per-peer adaptive interval + backpressure + RTT state
 //   - SetRole: runtime role change with tree-edge rebalance
-//   - SetTenant: tenant rebind with tombstone-and-republish
+//   - SetTenant: partition rebind with tombstone-and-republish
 //   - Pause/Resume: resource-governor integration
 //   - ContentTopic: content-addressed pull (single + chunked) for signed
 //     hash-addressed artifact distribution
