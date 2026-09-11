@@ -24,9 +24,9 @@ var (
 	// ErrTooLarge is returned when a single Record body exceeds Config.MaxRecordBytes.
 	ErrTooLarge = errors.New("swarm: record body exceeds maximum size")
 
-	// ErrTenantNotSet is returned when an agent operation is attempted
-	// before SetTenant has been called.
-	ErrTenantNotSet = errors.New("swarm: tenant not set")
+	// ErrPartitionNotSet is returned when an agent operation is attempted
+	// before SetPartition has been called.
+	ErrPartitionNotSet = errors.New("swarm: partition not set")
 
 	// ErrPaused is returned by Publish-style calls while the engine is paused.
 	ErrPaused = errors.New("swarm: engine paused")

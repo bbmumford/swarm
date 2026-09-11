@@ -6,7 +6,7 @@ package swarm
 // Topic naming conventions
 //
 // "fleet.*"          → HSTLES fleet fabric (shared across all partitions)
-// "agent.*.<tenant>" → agent fabric, partition-scoped per multi-tenancy plan
+// "agent.*.<partition>" → agent fabric, partition-scoped
 // "agent.*.<channel>" → agent fabric, channel-scoped (TUF stable|beta|canary)
 //
 // Each helper returns a swarm.Topic typed string. Subscribers register

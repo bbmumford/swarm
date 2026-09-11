@@ -55,7 +55,7 @@ type nodeImpl struct {
 	rolesMu        sync.Mutex
 	onRoleChange   []func(prev, next Role)
 	partitionMu       sync.Mutex
-	onTenantChange []func(prev, next string)
+	onPartitionChange []func(prev, next string)
 
 	// Transport — set on Start via Wire().
 	tport Transport
@@ -492,20 +492,20 @@ func (n *nodeImpl) SetRole(role Role) error {
 	return nil
 }
 
-func (n *nodeImpl) SetTenant(partitionID string) error {
+func (n *nodeImpl) SetPartition(partitionID string) error {
 	prevAny := n.partition.Swap(partitionID)
 	prev, _ := prevAny.(string)
 	if prev == partitionID {
 		return nil
 	}
 
-	// Tombstone all pre-tenant records published by THIS node.
+	// Tombstone all pre-rebind records published by THIS node.
 	// We do this only for our own records — peers tombstone theirs.
 	store := n.store
 	store.mu.RLock()
 	// Every slot, not just the keyless one: under composite keys this node
-	// may hold many records per topic, and a tenant change must retire all
-	// of them or the un-tombstoned ones keep gossiping under the old tenant.
+	// may hold many records per topic, and a partition change must retire all
+	// of them or the un-tombstoned ones keep gossiping under the old partition.
 	mine := make([]Record, 0)
 	for _, ts := range store.byTopic {
 		for k, r := range ts.records {
@@ -529,7 +529,7 @@ func (n *nodeImpl) SetTenant(partitionID string) error {
 		// send on its own store.Apply returning applied=true; with the
 		// tombstone pre-applied here, that second Apply is a no-op
 		// (identical HLC + deterministic Ed25519 sig), so Publish
-		// returned before pushing and the tenant-rebind tombstone NEVER
+		// returned before pushing and the partition-rebind tombstone NEVER
 		// reached the wire. Broadcast is the same fix the observer
 		// attestation path required, for the same double-apply reason.
 		if applied, _ := n.store.Apply(tomb); applied {
@@ -541,7 +541,7 @@ func (n *nodeImpl) SetTenant(partitionID string) error {
 	}
 
 	n.partitionMu.Lock()
-	for _, fn := range n.onTenantChange {
+	for _, fn := range n.onPartitionChange {
 		fn(prev, partitionID)
 	}
 	n.partitionMu.Unlock()
@@ -556,11 +556,11 @@ func (n *nodeImpl) OnRoleChange(fn func(prev, next Role)) {
 	n.onRoleChange = append(n.onRoleChange, fn)
 }
 
-// OnTenantChange registers a callback invoked when SetTenant succeeds.
-func (n *nodeImpl) OnTenantChange(fn func(prev, next string)) {
+// OnPartitionChange registers a callback invoked when SetPartition succeeds.
+func (n *nodeImpl) OnPartitionChange(fn func(prev, next string)) {
 	n.partitionMu.Lock()
 	defer n.partitionMu.Unlock()
-	n.onTenantChange = append(n.onTenantChange, fn)
+	n.onPartitionChange = append(n.onPartitionChange, fn)
 }
 
 // Role returns the current role.
@@ -609,8 +609,8 @@ func (n *nodeImpl) SetObserverQuorum(k int, w time.Duration) {
 	n.store.SetObserverQuorum(k, w)
 }
 
-// Tenant returns the current partition ID.
-func (n *nodeImpl) Tenant() string {
+// Partition returns the current partition ID.
+func (n *nodeImpl) Partition() string {
 	v, _ := n.partition.Load().(string)
 	return v
 }

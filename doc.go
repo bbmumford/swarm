@@ -9,7 +9,7 @@
 //   - Subscribe/Publish on partition-scoped topics
 //   - PerPeerConfig: per-peer adaptive interval + backpressure + RTT state
 //   - SetRole: runtime role change with tree-edge rebalance
-//   - SetTenant: partition rebind with tombstone-and-republish
+//   - SetPartition: partition rebind with tombstone-and-republish
 //   - Pause/Resume: resource-governor integration
 //   - ContentTopic: content-addressed pull (single + chunked) for signed
 //     hash-addressed artifact distribution
