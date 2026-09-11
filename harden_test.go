@@ -422,7 +422,7 @@ func TestNodeKeyBindingEnforced(t *testing.T) {
 	}
 }
 
-// ---------- Blocker 6: SetTenant broadcast + subscribe replay ----------
+// ---------- Blocker 6: SetPartition broadcast + subscribe replay ----------
 
 func TestSetTenantTombstoneReachesPeers(t *testing.T) {
 	net := newMemNet()
@@ -443,14 +443,14 @@ func TestSetTenantTombstoneReachesPeers(t *testing.T) {
 	// Pre-hardening: the partition-rebind tombstone was applied locally then
 	// routed through Publish, whose second Apply returned applied=false —
 	// so it NEVER hit the wire and peers kept the stale record forever.
-	if err := a.node.SetTenant("tenant-1"); err != nil {
+	if err := a.node.SetPartition("tenant-1"); err != nil {
 		t.Fatal(err)
 	}
 	if !waitUntil(t, 3*time.Second, func() bool {
 		r, ok := b.impl.store.getRaw(topic, a.id)
 		return ok && r.Tombstone
 	}) {
-		t.Fatal("SetTenant tombstone never reached peer B")
+		t.Fatal("SetPartition tombstone never reached peer B")
 	}
 }
 

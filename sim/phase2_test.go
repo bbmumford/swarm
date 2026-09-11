@@ -13,7 +13,7 @@ import (
 	"github.com/bbmumford/swarm"
 )
 
-// TestSetTenantTombstonesSelfRecords verifies SetTenant tombstones every
+// TestSetTenantTombstonesSelfRecords verifies SetPartition tombstones every
 // pre-partition record published by this node.
 func TestSetTenantTombstonesSelfRecords(t *testing.T) {
 	_, priv, _ := ed25519.GenerateKey(rand.Reader)
@@ -44,7 +44,7 @@ func TestSetTenantTombstonesSelfRecords(t *testing.T) {
 	}
 
 	// Set partition — should tombstone the existing record
-	if err := node.SetTenant("acme-corp"); err != nil {
+	if err := node.SetPartition("acme-corp"); err != nil {
 		t.Fatal(err)
 	}
 

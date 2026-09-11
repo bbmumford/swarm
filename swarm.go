@@ -16,7 +16,7 @@ type NodeID string
 // Topic is a partition- and network-scoped topic identifier.
 // Conventions:
 //   - Fleet: "fleet.peer", "fleet.latency", "fleet.anchor-snapshot"
-//   - Agent: "agent.peer.<tenantID>.<networkID>", "agent.policy.<tenantID>", etc.
+//   - Agent: "agent.peer.<partition>.<networkID>", "agent.policy.<partition>", etc.
 type Topic string
 
 // Role classifies a node's tree-edge preferences and topic-publish duties.
@@ -404,9 +404,10 @@ type Node interface {
 	// Defaults are DefaultObserverQuorum / DefaultObserverCorroborationWindow.
 	SetObserverQuorum(k int, w time.Duration)
 
-	// SetTenant rebinds this Node to a tenant. Pre-tenant records are
-	// tombstoned; self records republish under the tenant-scoped topic.
-	SetTenant(tenantID string) error
+	// SetPartition rebinds this Node to a partition. Records published before
+	// the rebind are tombstoned; self records republish under the
+	// partition-scoped topic.
+	SetPartition(partition string) error
 
 	// Pause halts non-correctness-critical work (lazy push, merkle probes,
 	// route advertisements). Eager-push records continue to apply. The
