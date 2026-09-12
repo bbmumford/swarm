@@ -13,9 +13,9 @@ import (
 	"github.com/bbmumford/swarm"
 )
 
-// TestSetTenantTombstonesSelfRecords verifies SetPartition tombstones every
+// TestSetPartitionTombstonesSelfRecords verifies SetPartition tombstones every
 // pre-partition record published by this node.
-func TestSetTenantTombstonesSelfRecords(t *testing.T) {
+func TestSetPartitionTombstonesSelfRecords(t *testing.T) {
 	_, priv, _ := ed25519.GenerateKey(rand.Reader)
 	cfg := swarm.Config{
 		PrivKey:                 priv,

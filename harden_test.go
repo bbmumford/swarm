@@ -424,7 +424,7 @@ func TestNodeKeyBindingEnforced(t *testing.T) {
 
 // ---------- Blocker 6: SetPartition broadcast + subscribe replay ----------
 
-func TestSetTenantTombstoneReachesPeers(t *testing.T) {
+func TestSetPartitionTombstoneReachesPeers(t *testing.T) {
 	net := newMemNet()
 	a := startNode(t, net, Config{})
 	b := startNode(t, net, Config{})
