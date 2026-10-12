@@ -15,7 +15,7 @@ option go_package = "github.com/bbmumford/swarm/proto/pb";
 // Each "manifest" carries the SHA256 hash + metadata of an artifact whose
 // bytes are fetched via ContentTopic.
 
-// PolicyManifest lives on `agent.policy.<tenant>` (replaces the existing
+// PolicyManifest lives on `agent.policy.<partition>` (replaces the existing
 // `policy:` prefix gossip with manifest semantics).
 message PolicyManifest {
   uint64 epoch = 1;
@@ -27,7 +27,7 @@ message PolicyManifest {
   bytes  sig = 7;           // Ed25519 by publisher
 }
 
-// TrustManifest lives on `agent.trust.<tenant>` (replaces `trust:` prefix).
+// TrustManifest lives on `agent.trust.<partition>` (replaces `trust:` prefix).
 // Carries the RD epoch — the actual key material rides KeyRotationEnvelope.
 message TrustManifest {
   uint64 rd_epoch = 1;
@@ -37,25 +37,26 @@ message TrustManifest {
   bytes  sig = 5;
 }
 
-// KeyRotationEnvelope is published when a PR or TR rotates. Lives on
-// `agent.keys.<tenant>`. Body of the corresponding ContentTopic fetch
+// KeyRotationEnvelope is published when a region root (RR) or a partition
+// root (PR) rotates. Lives on `agent.keys.<partition>`. Body of the
+// corresponding ContentTopic fetch
 // contains the actual signed certificate.
 message KeyRotationEnvelope {
   enum KeyKind {
     KEY_UNKNOWN = 0;
-    KEY_PLATFORM_ROOT = 1;  // PR rotation
-    KEY_TENANT_ROOT = 2;    // TR rotation
+    KEY_REGION_ROOT = 1;     // RR rotation
+    KEY_PARTITION_ROOT = 2;  // PR rotation
   }
   KeyKind kind = 1;
   bytes   old_fingerprint = 2;
   bytes   new_fingerprint = 3;
   bytes   new_key_hash = 4;       // hash of the new key+cert blob (ContentTopic)
   uint64  grace_period_s = 5;     // seconds; 0 = immediate (compromise)
-  bytes   signed_by = 6;          // pubkey that signed (PR for TR rotation; OR for PR rotation)
+  bytes   signed_by = 6;          // pubkey that signed (RR for a PR rotation; OR for an RR rotation)
   bytes   signature = 7;          // signature over the above
 }
 
-// BlocklistManifest lives on `agent.blocklists.<tenant>`. Edge Endpoint
+// BlocklistManifest lives on `agent.blocklists.<partition>`. Edge Endpoint
 // downloads blocklist from URL, hashes, publishes; other agents FetchBlob.
 message BlocklistManifest {
   string list_id = 1;
@@ -68,7 +69,7 @@ message BlocklistManifest {
   bytes  sig = 8;
 }
 
-// AssetManifest lives on `agent.assets.<tenant>`. Admin uploads via
+// AssetManifest lives on `agent.assets.<partition>`. Admin uploads via
 // app.orbtr.io → C2 signs this → agents scope-match + FetchBlob.
 message AssetManifest {
   string asset_id = 1;
@@ -79,7 +80,7 @@ message AssetManifest {
   string mime = 6;
   int64  uploaded_at = 7;
   bytes  uploaded_by_user = 8; // SHA256(admin_email) for audit
-  bytes  signed_by = 9;        // TR pubkey
+  bytes  signed_by = 9;        // partition root (PR) pubkey
   bytes  signature = 10;
 }
 
@@ -92,7 +93,7 @@ message ScopeSpec {
   repeated string device_ids = 3;
 }
 
-// RuleManifest lives on `agent.rules.<tenant>.<type>` where type is
+// RuleManifest lives on `agent.rules.<partition>.<type>` where type is
 // yara|capa|sigma|flirt.
 message RuleManifest {
   string rule_type = 1;     // "yara" | "capa" | "sigma" | "flirt"
@@ -105,7 +106,7 @@ message RuleManifest {
   bytes  sig = 8;
 }
 
-// DriverManifest lives on `agent.drivers.<tenant>.<platform>`. Edge
+// DriverManifest lives on `agent.drivers.<partition>.<platform>`. Edge
 // Endpoint extracts printer drivers, hashes, publishes.
 message DriverManifest {
   string printer_model = 1;
@@ -117,13 +118,13 @@ message DriverManifest {
   bytes  sig = 7;
 }
 
-// VoucherManifest lives on `agent.vouchers.<tenant>` (offline enrollment).
+// VoucherManifest lives on `agent.vouchers.<partition>` (offline enrollment).
 message VoucherManifest {
   string voucher_id = 1;
   bytes  voucher_hash = 2;
   bytes  device_fingerprint = 3; // for whom this voucher applies
   int64  expires_at = 4;
-  bytes  signed_by = 5;          // TR pubkey
+  bytes  signed_by = 5;          // partition root (PR) pubkey
   bytes  signature = 6;
 }
 
@@ -136,10 +137,10 @@ message TUFManifest {
   bytes  binary_hash = 4;   // hash of the binary (when artifact_kind ∈ agent/tools/tray)
   uint64 size = 5;
   int64  published_at = 6;
-  bytes  sig = 7;           // PR-signed
+  bytes  sig = 7;           // region-root (RR) signed
 }
 
-// FIMBaselineManifest lives on `agent.fim-baselines.<tenant>.<path-hash>`.
+// FIMBaselineManifest lives on `agent.fim-baselines.<partition>.<path-hash>`.
 message FIMBaselineManifest {
   bytes  path_hash = 1;     // SHA256 of monitored path
   bytes  baseline_hash = 2; // SHA256 of baseline snapshot
@@ -159,7 +160,7 @@ message OSQueryPackManifest {
   bytes  sig = 6;
 }
 
-// LiveQueryResultManifest (opt-in) lives on `agent.livequery-cache.<tenant>`.
+// LiveQueryResultManifest (opt-in) lives on `agent.livequery-cache.<partition>`.
 message LiveQueryResultManifest {
   bytes  query_hash = 1;      // SHA256(SELECT statement + scope filters)
   bytes  result_hash = 2;     // SHA256 of result bytes
@@ -170,7 +171,7 @@ message LiveQueryResultManifest {
   bytes  sig = 7;
 }
 
-// ForensicIndex lives on `agent.forensic-index.<tenant>`. Carries ONLY
+// ForensicIndex lives on `agent.forensic-index.<partition>`. Carries ONLY
 // hashes of forensic artifacts; bytes stay local (privacy).
 message ForensicIndex {
   string artifact_type = 1; // "crash_dump" | "log_excerpt" | "memory_image" | ...
@@ -183,13 +184,13 @@ message ForensicIndex {
 
 // ---------- Operational state topics ----------
 
-// DDNSRecord lives on `agent.ddns.<tenant>`. Carries Hidden + Admin zone
+// DDNSRecord lives on `agent.ddns.<partition>`. Carries Hidden + Admin zone
 // records with health-check + failover semantics.
 message DDNSRecord {
   enum Zone {
     ZONE_UNKNOWN = 0;
-    ZONE_HIDDEN = 1;   // {role}.{tenant_id}.ddns.orbtr.io
-    ZONE_ADMIN = 2;    // {custom}.{tenant_id}.ddns.orbtr.io
+    ZONE_HIDDEN = 1;   // {role}.{partition_id}.ddns.orbtr.io
+    ZONE_ADMIN = 2;    // {custom}.{partition_id}.ddns.orbtr.io
   }
   enum FailoverMode {
     FAILOVER_ACTIVE_ACTIVE = 0;
@@ -225,7 +226,7 @@ message HealthCheckSpec {
   uint32 unhealthy_threshold = 6;
 }
 
-// QuarantineNotice lives on `agent.quarantine.<tenant>`.
+// QuarantineNotice lives on `agent.quarantine.<partition>`.
 message QuarantineNotice {
   bytes  peer_node_id = 1;
   string reason = 2;
@@ -236,7 +237,7 @@ message QuarantineNotice {
   bytes  signature = 7;
 }
 
-// DHCPLeaseRecord lives on `agent.dhcp.<tenant>.<segment>`.
+// DHCPLeaseRecord lives on `agent.dhcp.<partition>.<segment>`.
 message DHCPLeaseRecord {
   string mac_address = 1;
   string ip_address = 2;
@@ -248,7 +249,7 @@ message DHCPLeaseRecord {
   bytes  sig = 8;
 }
 
-// DiscoveredAsset lives on `agent.discovered-assets.<tenant>`.
+// DiscoveredAsset lives on `agent.discovered-assets.<partition>`.
 message DiscoveredAsset {
   string asset_type = 1;       // "printer" | "snmp_device" | "ups" | ...
   string mac_address = 2;       // primary dedup key
@@ -261,7 +262,7 @@ message DiscoveredAsset {
   bytes  sig = 9;
 }
 
-// PrinterRecord lives on `agent.printers.<tenant>` (dedup of discovered printers).
+// PrinterRecord lives on `agent.printers.<partition>` (dedup of discovered printers).
 message PrinterRecord {
   string mac_address = 1;
   string model = 2;
@@ -275,7 +276,7 @@ message PrinterRecord {
   bytes  sig = 10;
 }
 
-// ServiceStateRecord lives on `agent.service-state.<tenant>`.
+// ServiceStateRecord lives on `agent.service-state.<partition>`.
 message ServiceStateRecord {
   string service_name = 1;
   string state = 2;       // "running" | "stopped" | "failed"
@@ -285,7 +286,7 @@ message ServiceStateRecord {
   bytes  sig = 6;
 }
 
-// InventoryDelta lives on `agent.inventory-deltas.<tenant>`.
+// InventoryDelta lives on `agent.inventory-deltas.<partition>`.
 message InventoryDelta {
   string category = 1;          // "hardware" | "os" | "network" | "software" | ...
   bytes  delta_hash = 2;        // SHA256 of canonical delta payload
@@ -298,7 +299,7 @@ message InventoryDelta {
 
 // ---------- Security-critical topics ----------
 
-// RevocationNotice lives on `agent.revoked-keys.<tenant>`.
+// RevocationNotice lives on `agent.revoked-keys.<partition>`.
 message RevocationNotice {
   bytes  revoked_fingerprint = 1;
   string reason = 2;
@@ -307,16 +308,16 @@ message RevocationNotice {
   bytes  signature = 5;
 }
 
-// NetworkPSKRotation lives on `agent.network-psk.<tenant>.<epoch>`.
+// NetworkPSKRotation lives on `agent.network-psk.<partition>.<epoch>`.
 message NetworkPSKRotation {
   uint64 epoch = 1;
   bytes  new_psk_hash = 2; // hash; new PSK fetched via ContentTopic
   uint64 grace_period_s = 3;
-  bytes  signed_by = 4; // TR
+  bytes  signed_by = 4; // partition root (PR)
   bytes  signature = 5;
 }
 
-// TrustPinUpdate lives on `agent.trust-pins.<tenant>`.
+// TrustPinUpdate lives on `agent.trust-pins.<partition>`.
 message TrustPinUpdate {
   enum PinKind {
     PIN_SPKI = 0;
@@ -330,7 +331,7 @@ message TrustPinUpdate {
   bytes  signature = 6;
 }
 
-// TLSPinTOFU lives on `agent.tls-pins.<tenant>.<domain>`.
+// TLSPinTOFU lives on `agent.tls-pins.<partition>.<domain>`.
 message TLSPinTOFU {
   string domain = 1;
   bytes  pin_hash = 2;
@@ -340,7 +341,7 @@ message TLSPinTOFU {
   bytes  sig = 6;
 }
 
-// IntegrityAlert lives on `agent.integrity-alert.<tenant>`.
+// IntegrityAlert lives on `agent.integrity-alert.<partition>`.
 message IntegrityAlert {
   string violation_type = 1; // "db_tamper" | "binary_modified" | "config_modified" | ...
   string detail = 2;
@@ -352,7 +353,7 @@ message IntegrityAlert {
 
 // ---------- Multi-session / multi-device topics ----------
 
-// SessionRecord lives on `agent.session.<tenant>.<device>`.
+// SessionRecord lives on `agent.session.<partition>.<device>`.
 message SessionRecord {
   string session_id = 1;
   string os_user_hash = 2; // SHA256(user@domain)
@@ -363,7 +364,7 @@ message SessionRecord {
   bytes  sig = 7;
 }
 
-// ConsentRecord lives on `agent.consent.<tenant>.<user_id>`.
+// ConsentRecord lives on `agent.consent.<partition>.<user_id>`.
 message ConsentRecord {
   string user_hash = 1;
   bytes  script_hash = 2; // what the user consented to (or denied)
@@ -373,7 +374,7 @@ message ConsentRecord {
   bytes  sig = 6;
 }
 
-// RemoteSessionRecord lives on `agent.remote-sessions.<tenant>`.
+// RemoteSessionRecord lives on `agent.remote-sessions.<partition>`.
 message RemoteSessionRecord {
   string session_id = 1;
   string session_type = 2; // "remote_desktop" | "remote_shell" | "tunnel_rdp" | "tunnel_ssh"
@@ -385,7 +386,7 @@ message RemoteSessionRecord {
   bytes  sig = 8;
 }
 
-// TunnelEndpoint lives on `agent.tunnels.<tenant>`.
+// TunnelEndpoint lives on `agent.tunnels.<partition>`.
 message TunnelEndpoint {
   string session_id = 1;
   string protocol = 2;     // "rdp" | "ssh" | "custom"
@@ -399,7 +400,7 @@ message TunnelEndpoint {
 
 // ---------- Telemetry / observability topics ----------
 
-// HealthSummary lives on `agent.health.<tenant>`. Distinct from the
+// HealthSummary lives on `agent.health.<partition>`. Distinct from the
 // repurposed `agent.mesh.Health` named RPC: this is gossip-style summary;
 // the RPC is point-to-point query.
 message HealthSummary {
@@ -414,7 +415,7 @@ message HealthSummary {
   bytes  sig = 9;
 }
 
-// EventRecord lives on `agent.event.<tenant>.<type>`.
+// EventRecord lives on `agent.event.<partition>.<type>`.
 message EventRecord {
   string event_type = 1; // "policy_applied" | "service_restart" | ...
   string device_id = 2;
@@ -424,7 +425,7 @@ message EventRecord {
   bytes  sig = 6;
 }
 
-// ThreatSignal lives on `agent.threat-signal.<tenant>`. Carries ONLY
+// ThreatSignal lives on `agent.threat-signal.<partition>`. Carries ONLY
 // signed hashes/aggregates — raw ETW content stays local (privacy).
 message ThreatSignal {
   string signal_type = 1;        // "suspicious_process_to_network" | "file_hash_match" | ...
@@ -438,7 +439,7 @@ message ThreatSignal {
 
 // ---------- Privacy-aware opt-ins ----------
 
-// DNSCacheEntry lives on `agent.dns-cache.<tenant>` (opt-in only).
+// DNSCacheEntry lives on `agent.dns-cache.<partition>` (opt-in only).
 message DNSCacheEntry {
   string qname = 1;
   string qtype = 2;

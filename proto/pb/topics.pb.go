@@ -30,22 +30,22 @@ const (
 type KeyRotationEnvelope_KeyKind int32
 
 const (
-	KeyRotationEnvelope_KEY_UNKNOWN       KeyRotationEnvelope_KeyKind = 0
-	KeyRotationEnvelope_KEY_PLATFORM_ROOT KeyRotationEnvelope_KeyKind = 1 // PR rotation
-	KeyRotationEnvelope_KEY_TENANT_ROOT   KeyRotationEnvelope_KeyKind = 2 // TR rotation
+	KeyRotationEnvelope_KEY_UNKNOWN        KeyRotationEnvelope_KeyKind = 0
+	KeyRotationEnvelope_KEY_REGION_ROOT    KeyRotationEnvelope_KeyKind = 1 // RR rotation
+	KeyRotationEnvelope_KEY_PARTITION_ROOT KeyRotationEnvelope_KeyKind = 2 // PR rotation
 )
 
 // Enum value maps for KeyRotationEnvelope_KeyKind.
 var (
 	KeyRotationEnvelope_KeyKind_name = map[int32]string{
 		0: "KEY_UNKNOWN",
-		1: "KEY_PLATFORM_ROOT",
-		2: "KEY_TENANT_ROOT",
+		1: "KEY_REGION_ROOT",
+		2: "KEY_PARTITION_ROOT",
 	}
 	KeyRotationEnvelope_KeyKind_value = map[string]int32{
-		"KEY_UNKNOWN":       0,
-		"KEY_PLATFORM_ROOT": 1,
-		"KEY_TENANT_ROOT":   2,
+		"KEY_UNKNOWN":        0,
+		"KEY_REGION_ROOT":    1,
+		"KEY_PARTITION_ROOT": 2,
 	}
 )
 
@@ -80,8 +80,8 @@ type DDNSRecord_Zone int32
 
 const (
 	DDNSRecord_ZONE_UNKNOWN DDNSRecord_Zone = 0
-	DDNSRecord_ZONE_HIDDEN  DDNSRecord_Zone = 1 // {role}.{tenant_id}.ddns.orbtr.io
-	DDNSRecord_ZONE_ADMIN   DDNSRecord_Zone = 2 // {custom}.{tenant_id}.ddns.orbtr.io
+	DDNSRecord_ZONE_HIDDEN  DDNSRecord_Zone = 1 // {role}.{partition_id}.ddns.orbtr.io
+	DDNSRecord_ZONE_ADMIN   DDNSRecord_Zone = 2 // {custom}.{partition_id}.ddns.orbtr.io
 )
 
 // Enum value maps for DDNSRecord_Zone.
@@ -220,7 +220,7 @@ func (TrustPinUpdate_PinKind) EnumDescriptor() ([]byte, []int) {
 	return file_topics_proto_rawDescGZIP(), []int{25, 0}
 }
 
-// PolicyManifest lives on `agent.policy.<tenant>` (replaces the existing
+// PolicyManifest lives on `agent.policy.<partition>` (replaces the existing
 // `policy:` prefix gossip with manifest semantics).
 type PolicyManifest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -314,7 +314,7 @@ func (x *PolicyManifest) GetSig() []byte {
 	return nil
 }
 
-// TrustManifest lives on `agent.trust.<tenant>` (replaces `trust:` prefix).
+// TrustManifest lives on `agent.trust.<partition>` (replaces `trust:` prefix).
 // Carries the RD epoch — the actual key material rides KeyRotationEnvelope.
 type TrustManifest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -392,8 +392,9 @@ func (x *TrustManifest) GetSig() []byte {
 	return nil
 }
 
-// KeyRotationEnvelope is published when a PR or TR rotates. Lives on
-// `agent.keys.<tenant>`. Body of the corresponding ContentTopic fetch
+// KeyRotationEnvelope is published when a region root (RR) or a partition
+// root (PR) rotates. Lives on `agent.keys.<partition>`. Body of the
+// corresponding ContentTopic fetch
 // contains the actual signed certificate.
 type KeyRotationEnvelope struct {
 	state          protoimpl.MessageState      `protogen:"open.v1"`
@@ -402,7 +403,7 @@ type KeyRotationEnvelope struct {
 	NewFingerprint []byte                      `protobuf:"bytes,3,opt,name=new_fingerprint,json=newFingerprint,proto3" json:"new_fingerprint,omitempty"`
 	NewKeyHash     []byte                      `protobuf:"bytes,4,opt,name=new_key_hash,json=newKeyHash,proto3" json:"new_key_hash,omitempty"`        // hash of the new key+cert blob (ContentTopic)
 	GracePeriodS   uint64                      `protobuf:"varint,5,opt,name=grace_period_s,json=gracePeriodS,proto3" json:"grace_period_s,omitempty"` // seconds; 0 = immediate (compromise)
-	SignedBy       []byte                      `protobuf:"bytes,6,opt,name=signed_by,json=signedBy,proto3" json:"signed_by,omitempty"`                // pubkey that signed (PR for TR rotation; OR for PR rotation)
+	SignedBy       []byte                      `protobuf:"bytes,6,opt,name=signed_by,json=signedBy,proto3" json:"signed_by,omitempty"`                // pubkey that signed (RR for a PR rotation; OR for an RR rotation)
 	Signature      []byte                      `protobuf:"bytes,7,opt,name=signature,proto3" json:"signature,omitempty"`                              // signature over the above
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
@@ -487,7 +488,7 @@ func (x *KeyRotationEnvelope) GetSignature() []byte {
 	return nil
 }
 
-// BlocklistManifest lives on `agent.blocklists.<tenant>`. Edge Endpoint
+// BlocklistManifest lives on `agent.blocklists.<partition>`. Edge Endpoint
 // downloads blocklist from URL, hashes, publishes; other agents FetchBlob.
 type BlocklistManifest struct {
 	state            protoimpl.MessageState `protogen:"open.v1"`
@@ -589,7 +590,7 @@ func (x *BlocklistManifest) GetSig() []byte {
 	return nil
 }
 
-// AssetManifest lives on `agent.assets.<tenant>`. Admin uploads via
+// AssetManifest lives on `agent.assets.<partition>`. Admin uploads via
 // app.orbtr.io → C2 signs this → agents scope-match + FetchBlob.
 type AssetManifest struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
@@ -601,7 +602,7 @@ type AssetManifest struct {
 	Mime           string                 `protobuf:"bytes,6,opt,name=mime,proto3" json:"mime,omitempty"`
 	UploadedAt     int64                  `protobuf:"varint,7,opt,name=uploaded_at,json=uploadedAt,proto3" json:"uploaded_at,omitempty"`
 	UploadedByUser []byte                 `protobuf:"bytes,8,opt,name=uploaded_by_user,json=uploadedByUser,proto3" json:"uploaded_by_user,omitempty"` // SHA256(admin_email) for audit
-	SignedBy       []byte                 `protobuf:"bytes,9,opt,name=signed_by,json=signedBy,proto3" json:"signed_by,omitempty"`                     // TR pubkey
+	SignedBy       []byte                 `protobuf:"bytes,9,opt,name=signed_by,json=signedBy,proto3" json:"signed_by,omitempty"`                     // partition root (PR) pubkey
 	Signature      []byte                 `protobuf:"bytes,10,opt,name=signature,proto3" json:"signature,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
@@ -770,7 +771,7 @@ func (x *ScopeSpec) GetDeviceIds() []string {
 	return nil
 }
 
-// RuleManifest lives on `agent.rules.<tenant>.<type>` where type is
+// RuleManifest lives on `agent.rules.<partition>.<type>` where type is
 // yara|capa|sigma|flirt.
 type RuleManifest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -872,7 +873,7 @@ func (x *RuleManifest) GetSig() []byte {
 	return nil
 }
 
-// DriverManifest lives on `agent.drivers.<tenant>.<platform>`. Edge
+// DriverManifest lives on `agent.drivers.<partition>.<platform>`. Edge
 // Endpoint extracts printer drivers, hashes, publishes.
 type DriverManifest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -966,14 +967,14 @@ func (x *DriverManifest) GetSig() []byte {
 	return nil
 }
 
-// VoucherManifest lives on `agent.vouchers.<tenant>` (offline enrollment).
+// VoucherManifest lives on `agent.vouchers.<partition>` (offline enrollment).
 type VoucherManifest struct {
 	state             protoimpl.MessageState `protogen:"open.v1"`
 	VoucherId         string                 `protobuf:"bytes,1,opt,name=voucher_id,json=voucherId,proto3" json:"voucher_id,omitempty"`
 	VoucherHash       []byte                 `protobuf:"bytes,2,opt,name=voucher_hash,json=voucherHash,proto3" json:"voucher_hash,omitempty"`
 	DeviceFingerprint []byte                 `protobuf:"bytes,3,opt,name=device_fingerprint,json=deviceFingerprint,proto3" json:"device_fingerprint,omitempty"` // for whom this voucher applies
 	ExpiresAt         int64                  `protobuf:"varint,4,opt,name=expires_at,json=expiresAt,proto3" json:"expires_at,omitempty"`
-	SignedBy          []byte                 `protobuf:"bytes,5,opt,name=signed_by,json=signedBy,proto3" json:"signed_by,omitempty"` // TR pubkey
+	SignedBy          []byte                 `protobuf:"bytes,5,opt,name=signed_by,json=signedBy,proto3" json:"signed_by,omitempty"` // partition root (PR) pubkey
 	Signature         []byte                 `protobuf:"bytes,6,opt,name=signature,proto3" json:"signature,omitempty"`
 	unknownFields     protoimpl.UnknownFields
 	sizeCache         protoimpl.SizeCache
@@ -1061,7 +1062,7 @@ type TUFManifest struct {
 	BinaryHash    []byte                 `protobuf:"bytes,4,opt,name=binary_hash,json=binaryHash,proto3" json:"binary_hash,omitempty"`       // hash of the binary (when artifact_kind ∈ agent/tools/tray)
 	Size          uint64                 `protobuf:"varint,5,opt,name=size,proto3" json:"size,omitempty"`
 	PublishedAt   int64                  `protobuf:"varint,6,opt,name=published_at,json=publishedAt,proto3" json:"published_at,omitempty"`
-	Sig           []byte                 `protobuf:"bytes,7,opt,name=sig,proto3" json:"sig,omitempty"` // PR-signed
+	Sig           []byte                 `protobuf:"bytes,7,opt,name=sig,proto3" json:"sig,omitempty"` // region-root (RR) signed
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1145,7 +1146,7 @@ func (x *TUFManifest) GetSig() []byte {
 	return nil
 }
 
-// FIMBaselineManifest lives on `agent.fim-baselines.<tenant>.<path-hash>`.
+// FIMBaselineManifest lives on `agent.fim-baselines.<partition>.<path-hash>`.
 type FIMBaselineManifest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	PathHash      []byte                 `protobuf:"bytes,1,opt,name=path_hash,json=pathHash,proto3" json:"path_hash,omitempty"`             // SHA256 of monitored path
@@ -1315,7 +1316,7 @@ func (x *OSQueryPackManifest) GetSig() []byte {
 	return nil
 }
 
-// LiveQueryResultManifest (opt-in) lives on `agent.livequery-cache.<tenant>`.
+// LiveQueryResultManifest (opt-in) lives on `agent.livequery-cache.<partition>`.
 type LiveQueryResultManifest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	QueryHash     []byte                 `protobuf:"bytes,1,opt,name=query_hash,json=queryHash,proto3" json:"query_hash,omitempty"`    // SHA256(SELECT statement + scope filters)
@@ -1408,7 +1409,7 @@ func (x *LiveQueryResultManifest) GetSig() []byte {
 	return nil
 }
 
-// ForensicIndex lives on `agent.forensic-index.<tenant>`. Carries ONLY
+// ForensicIndex lives on `agent.forensic-index.<partition>`. Carries ONLY
 // hashes of forensic artifacts; bytes stay local (privacy).
 type ForensicIndex struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -1494,7 +1495,7 @@ func (x *ForensicIndex) GetSig() []byte {
 	return nil
 }
 
-// DDNSRecord lives on `agent.ddns.<tenant>`. Carries Hidden + Admin zone
+// DDNSRecord lives on `agent.ddns.<partition>`. Carries Hidden + Admin zone
 // records with health-check + failover semantics.
 type DDNSRecord struct {
 	state         protoimpl.MessageState  `protogen:"open.v1"`
@@ -1764,7 +1765,7 @@ func (x *HealthCheckSpec) GetUnhealthyThreshold() uint32 {
 	return 0
 }
 
-// QuarantineNotice lives on `agent.quarantine.<tenant>`.
+// QuarantineNotice lives on `agent.quarantine.<partition>`.
 type QuarantineNotice struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	PeerNodeId    []byte                 `protobuf:"bytes,1,opt,name=peer_node_id,json=peerNodeId,proto3" json:"peer_node_id,omitempty"`
@@ -1857,7 +1858,7 @@ func (x *QuarantineNotice) GetSignature() []byte {
 	return nil
 }
 
-// DHCPLeaseRecord lives on `agent.dhcp.<tenant>.<segment>`.
+// DHCPLeaseRecord lives on `agent.dhcp.<partition>.<segment>`.
 type DHCPLeaseRecord struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	MacAddress    string                 `protobuf:"bytes,1,opt,name=mac_address,json=macAddress,proto3" json:"mac_address,omitempty"`
@@ -1958,7 +1959,7 @@ func (x *DHCPLeaseRecord) GetSig() []byte {
 	return nil
 }
 
-// DiscoveredAsset lives on `agent.discovered-assets.<tenant>`.
+// DiscoveredAsset lives on `agent.discovered-assets.<partition>`.
 type DiscoveredAsset struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	AssetType     string                 `protobuf:"bytes,1,opt,name=asset_type,json=assetType,proto3" json:"asset_type,omitempty"`    // "printer" | "snmp_device" | "ups" | ...
@@ -2067,7 +2068,7 @@ func (x *DiscoveredAsset) GetSig() []byte {
 	return nil
 }
 
-// PrinterRecord lives on `agent.printers.<tenant>` (dedup of discovered printers).
+// PrinterRecord lives on `agent.printers.<partition>` (dedup of discovered printers).
 type PrinterRecord struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	MacAddress     string                 `protobuf:"bytes,1,opt,name=mac_address,json=macAddress,proto3" json:"mac_address,omitempty"`
@@ -2184,7 +2185,7 @@ func (x *PrinterRecord) GetSig() []byte {
 	return nil
 }
 
-// ServiceStateRecord lives on `agent.service-state.<tenant>`.
+// ServiceStateRecord lives on `agent.service-state.<partition>`.
 type ServiceStateRecord struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	ServiceName   string                 `protobuf:"bytes,1,opt,name=service_name,json=serviceName,proto3" json:"service_name,omitempty"`
@@ -2269,7 +2270,7 @@ func (x *ServiceStateRecord) GetSig() []byte {
 	return nil
 }
 
-// InventoryDelta lives on `agent.inventory-deltas.<tenant>`.
+// InventoryDelta lives on `agent.inventory-deltas.<partition>`.
 type InventoryDelta struct {
 	state            protoimpl.MessageState `protogen:"open.v1"`
 	Category         string                 `protobuf:"bytes,1,opt,name=category,proto3" json:"category,omitempty"`                                           // "hardware" | "os" | "network" | "software" | ...
@@ -2362,7 +2363,7 @@ func (x *InventoryDelta) GetSig() []byte {
 	return nil
 }
 
-// RevocationNotice lives on `agent.revoked-keys.<tenant>`.
+// RevocationNotice lives on `agent.revoked-keys.<partition>`.
 type RevocationNotice struct {
 	state              protoimpl.MessageState `protogen:"open.v1"`
 	RevokedFingerprint []byte                 `protobuf:"bytes,1,opt,name=revoked_fingerprint,json=revokedFingerprint,proto3" json:"revoked_fingerprint,omitempty"`
@@ -2439,13 +2440,13 @@ func (x *RevocationNotice) GetSignature() []byte {
 	return nil
 }
 
-// NetworkPSKRotation lives on `agent.network-psk.<tenant>.<epoch>`.
+// NetworkPSKRotation lives on `agent.network-psk.<partition>.<epoch>`.
 type NetworkPSKRotation struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Epoch         uint64                 `protobuf:"varint,1,opt,name=epoch,proto3" json:"epoch,omitempty"`
 	NewPskHash    []byte                 `protobuf:"bytes,2,opt,name=new_psk_hash,json=newPskHash,proto3" json:"new_psk_hash,omitempty"` // hash; new PSK fetched via ContentTopic
 	GracePeriodS  uint64                 `protobuf:"varint,3,opt,name=grace_period_s,json=gracePeriodS,proto3" json:"grace_period_s,omitempty"`
-	SignedBy      []byte                 `protobuf:"bytes,4,opt,name=signed_by,json=signedBy,proto3" json:"signed_by,omitempty"` // TR
+	SignedBy      []byte                 `protobuf:"bytes,4,opt,name=signed_by,json=signedBy,proto3" json:"signed_by,omitempty"` // partition root (PR)
 	Signature     []byte                 `protobuf:"bytes,5,opt,name=signature,proto3" json:"signature,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -2516,7 +2517,7 @@ func (x *NetworkPSKRotation) GetSignature() []byte {
 	return nil
 }
 
-// TrustPinUpdate lives on `agent.trust-pins.<tenant>`.
+// TrustPinUpdate lives on `agent.trust-pins.<partition>`.
 type TrustPinUpdate struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Kind          TrustPinUpdate_PinKind `protobuf:"varint,1,opt,name=kind,proto3,enum=swarm.v1.TrustPinUpdate_PinKind" json:"kind,omitempty"`
@@ -2601,7 +2602,7 @@ func (x *TrustPinUpdate) GetSignature() []byte {
 	return nil
 }
 
-// TLSPinTOFU lives on `agent.tls-pins.<tenant>.<domain>`.
+// TLSPinTOFU lives on `agent.tls-pins.<partition>.<domain>`.
 type TLSPinTOFU struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Domain        string                 `protobuf:"bytes,1,opt,name=domain,proto3" json:"domain,omitempty"`
@@ -2686,7 +2687,7 @@ func (x *TLSPinTOFU) GetSig() []byte {
 	return nil
 }
 
-// IntegrityAlert lives on `agent.integrity-alert.<tenant>`.
+// IntegrityAlert lives on `agent.integrity-alert.<partition>`.
 type IntegrityAlert struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	ViolationType string                 `protobuf:"bytes,1,opt,name=violation_type,json=violationType,proto3" json:"violation_type,omitempty"` // "db_tamper" | "binary_modified" | "config_modified" | ...
@@ -2771,7 +2772,7 @@ func (x *IntegrityAlert) GetSig() []byte {
 	return nil
 }
 
-// SessionRecord lives on `agent.session.<tenant>.<device>`.
+// SessionRecord lives on `agent.session.<partition>.<device>`.
 type SessionRecord struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	SessionId     string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
@@ -2864,7 +2865,7 @@ func (x *SessionRecord) GetSig() []byte {
 	return nil
 }
 
-// ConsentRecord lives on `agent.consent.<tenant>.<user_id>`.
+// ConsentRecord lives on `agent.consent.<partition>.<user_id>`.
 type ConsentRecord struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	UserHash      string                 `protobuf:"bytes,1,opt,name=user_hash,json=userHash,proto3" json:"user_hash,omitempty"`
@@ -2949,7 +2950,7 @@ func (x *ConsentRecord) GetSig() []byte {
 	return nil
 }
 
-// RemoteSessionRecord lives on `agent.remote-sessions.<tenant>`.
+// RemoteSessionRecord lives on `agent.remote-sessions.<partition>`.
 type RemoteSessionRecord struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	SessionId      string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
@@ -3050,7 +3051,7 @@ func (x *RemoteSessionRecord) GetSig() []byte {
 	return nil
 }
 
-// TunnelEndpoint lives on `agent.tunnels.<tenant>`.
+// TunnelEndpoint lives on `agent.tunnels.<partition>`.
 type TunnelEndpoint struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	SessionId      string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
@@ -3151,7 +3152,7 @@ func (x *TunnelEndpoint) GetSig() []byte {
 	return nil
 }
 
-// HealthSummary lives on `agent.health.<tenant>`. Distinct from the
+// HealthSummary lives on `agent.health.<partition>`. Distinct from the
 // repurposed `agent.mesh.Health` named RPC: this is gossip-style summary;
 // the RPC is point-to-point query.
 type HealthSummary struct {
@@ -3262,7 +3263,7 @@ func (x *HealthSummary) GetSig() []byte {
 	return nil
 }
 
-// EventRecord lives on `agent.event.<tenant>.<type>`.
+// EventRecord lives on `agent.event.<partition>.<type>`.
 type EventRecord struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	EventType     string                 `protobuf:"bytes,1,opt,name=event_type,json=eventType,proto3" json:"event_type,omitempty"` // "policy_applied" | "service_restart" | ...
@@ -3347,7 +3348,7 @@ func (x *EventRecord) GetSig() []byte {
 	return nil
 }
 
-// ThreatSignal lives on `agent.threat-signal.<tenant>`. Carries ONLY
+// ThreatSignal lives on `agent.threat-signal.<partition>`. Carries ONLY
 // signed hashes/aggregates — raw ETW content stays local (privacy).
 type ThreatSignal struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
@@ -3441,7 +3442,7 @@ func (x *ThreatSignal) GetSig() []byte {
 	return nil
 }
 
-// DNSCacheEntry lives on `agent.dns-cache.<tenant>` (opt-in only).
+// DNSCacheEntry lives on `agent.dns-cache.<partition>` (opt-in only).
 type DNSCacheEntry struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Qname         string                 `protobuf:"bytes,1,opt,name=qname,proto3" json:"qname,omitempty"`
@@ -3554,7 +3555,7 @@ const file_topics_proto_rawDesc = "" +
 	"\ard_hash\x18\x02 \x01(\fR\x06rdHash\x12\x1c\n" +
 	"\tpublisher\x18\x03 \x01(\fR\tpublisher\x12!\n" +
 	"\fpublished_at\x18\x04 \x01(\x03R\vpublishedAt\x12\x10\n" +
-	"\x03sig\x18\x05 \x01(\fR\x03sig\"\xed\x02\n" +
+	"\x03sig\x18\x05 \x01(\fR\x03sig\"\xee\x02\n" +
 	"\x13KeyRotationEnvelope\x129\n" +
 	"\x04kind\x18\x01 \x01(\x0e2%.swarm.v1.KeyRotationEnvelope.KeyKindR\x04kind\x12'\n" +
 	"\x0fold_fingerprint\x18\x02 \x01(\fR\x0eoldFingerprint\x12'\n" +
@@ -3563,11 +3564,11 @@ const file_topics_proto_rawDesc = "" +
 	"newKeyHash\x12$\n" +
 	"\x0egrace_period_s\x18\x05 \x01(\x04R\fgracePeriodS\x12\x1b\n" +
 	"\tsigned_by\x18\x06 \x01(\fR\bsignedBy\x12\x1c\n" +
-	"\tsignature\x18\a \x01(\fR\tsignature\"F\n" +
+	"\tsignature\x18\a \x01(\fR\tsignature\"G\n" +
 	"\aKeyKind\x12\x0f\n" +
-	"\vKEY_UNKNOWN\x10\x00\x12\x15\n" +
-	"\x11KEY_PLATFORM_ROOT\x10\x01\x12\x13\n" +
-	"\x0fKEY_TENANT_ROOT\x10\x02\"\x87\x02\n" +
+	"\vKEY_UNKNOWN\x10\x00\x12\x13\n" +
+	"\x0fKEY_REGION_ROOT\x10\x01\x12\x16\n" +
+	"\x12KEY_PARTITION_ROOT\x10\x02\"\x87\x02\n" +
 	"\x11BlocklistManifest\x12\x17\n" +
 	"\alist_id\x18\x01 \x01(\tR\x06listId\x12%\n" +
 	"\x0eblocklist_hash\x18\x02 \x01(\fR\rblocklistHash\x12\x1d\n" +

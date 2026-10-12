@@ -31,7 +31,7 @@ option go_package = "github.com/bbmumford/swarm/proto/pb";
 // observer_node_id values arrive within a corroboration window — see
 // swarm/crdt.go applyAttestationLocked.
 message Record {
-  string topic = 1;        // tenant- and network-scoped topic name
+  string topic = 1;        // partition- and network-scoped topic name
   bytes  node_id = 2;      // opaque origin identifier (application-defined)
   uint64 hlc = 3;          // hybrid logical clock
   bytes  body = 4;         // opaque; topic-typed
