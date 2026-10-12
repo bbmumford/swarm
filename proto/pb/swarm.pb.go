@@ -49,7 +49,7 @@ const (
 // swarm/crdt.go applyAttestationLocked.
 type Record struct {
 	state     protoimpl.MessageState `protogen:"open.v1"`
-	Topic     string                 `protobuf:"bytes,1,opt,name=topic,proto3" json:"topic,omitempty"`                 // tenant- and network-scoped topic name
+	Topic     string                 `protobuf:"bytes,1,opt,name=topic,proto3" json:"topic,omitempty"`                 // partition- and network-scoped topic name
 	NodeId    []byte                 `protobuf:"bytes,2,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"` // opaque origin identifier (application-defined)
 	Hlc       uint64                 `protobuf:"varint,3,opt,name=hlc,proto3" json:"hlc,omitempty"`                    // hybrid logical clock
 	Body      []byte                 `protobuf:"bytes,4,opt,name=body,proto3" json:"body,omitempty"`                   // opaque; topic-typed

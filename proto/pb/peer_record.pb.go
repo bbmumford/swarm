@@ -191,7 +191,7 @@ func (Address_Transport) EnumDescriptor() ([]byte, []int) {
 }
 
 // PeerRecord lives in the body of a swarm.Record on topics like
-// "fleet.peer" or "agent.peer.<tenantID>.<networkID>".
+// "fleet.peer" or "agent.peer.<partition>.<networkID>".
 type PeerRecord struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// ---------- Identity ----------
