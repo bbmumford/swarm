@@ -57,10 +57,12 @@ func topicMerkleRoot(s *recordStore, topic Topic, rangeStart, rangeEnd []byte) [
 // merkleEngine drives periodic anti-entropy probes + range reconciliation
 // for drift recovery.
 //
-// Probes pick a random non-tree-edge peer's root for each topic at a low
-// cadence. If roots match, no action. If they differ, subdivide the
-// NodeID range and recurse — fetching missing records via inline
-// MerkleRange responses.
+// Each topic's probe goes to one peer per interval, chosen from every peer
+// whatever its tree-edge state, and carries that topic's root. If roots
+// match, no action. If they differ, subdivide the NodeID range and recurse,
+// fetching missing records via inline MerkleRange responses. A record a
+// range applies as new is handed to rumor, so it travels on from here the
+// way an eager push does.
 //
 // While paused, the engine suppresses probes but continues to respond to
 // peer probes (correctness-critical for cold-start resync).
@@ -96,6 +98,10 @@ type merkleEngine struct {
 
 	paused    atomic.Bool
 	onApplied func(r Record)
+
+	// rumor starts the push of a record HandleRange applied as new, with
+	// the peer the range came from excluded. Set via SetRumor.
+	rumor func(from NodeID, r Record)
 }
 
 // SetInboundGate installs the shared pre-store admission gate.
@@ -105,6 +111,14 @@ func (m *merkleEngine) SetInboundGate(g *inboundGate) { m.gate = g }
 // records that arrive via merkle anti-entropy reach topic subscribers.
 func (m *merkleEngine) SetOnApplied(fn func(r Record)) {
 	m.onApplied = fn
+}
+
+// SetRumor installs the push HandleRange starts for each record it applies
+// as new. Wire sets it to plumtreesEngine.forwardRepaired. Without it a
+// record that reaches a node only by repair goes no further than that node
+// until some other node's probe pulls it.
+func (m *merkleEngine) SetRumor(fn func(from NodeID, r Record)) {
+	m.rumor = fn
 }
 
 func newMerkle(store *recordStore, peers *peerTable, tport Transport, nowFn func() time.Time, probeInterval time.Duration) *merkleEngine {
@@ -157,12 +171,17 @@ func (m *merkleEngine) Tick() {
 		if !due {
 			continue
 		}
-		// Pick a random peer (excluding tree edges — they're already in sync
-		// via eager push; non-tree peers are the drift-recovery candidates).
-		peers := m.peers.NonTreeEdges()
+		// Every peer is a candidate, tree edges included: a tree edge is
+		// in sync only for what eager push carried, and when every peer is
+		// a tree edge a probe restricted to non-tree peers would never run,
+		// so a pushed record that was lost would never be repaired.
+		// Sorted, so the index below picks the same peer for the same
+		// peer set and clock.
+		peers := m.peers.All()
 		if len(peers) == 0 {
 			continue
 		}
+		sort.Slice(peers, func(i, j int) bool { return peers[i] < peers[j] })
 		// Deterministic pick: wall-clock millis mixed with the engine's
 		// per-node salt distributes selection across the peer set so
 		// nodes ticking on the same ms don't converge on a single
@@ -316,6 +335,11 @@ func (m *merkleEngine) HandleProbe(from NodeID, p *pb.MerkleProbe) {
 
 // HandleRange is the receiver side of a MerkleRange response. Applies the
 // included records; if truncated, recursively probes the second half.
+//
+// Each record the store applies as new starts a rumor through m.rumor,
+// inside this call, so a record repaired here reaches this node's tree
+// edges as a published one would. A record the store already holds applies
+// as not new and starts nothing, so a record repaired twice is pushed once.
 func (m *merkleEngine) HandleRange(from NodeID, hlc *HLC, r *pb.MerkleRange) {
 	for _, pr := range r.Records {
 		rec := recordFromProto(pr)
@@ -328,8 +352,14 @@ func (m *merkleEngine) HandleRange(from NodeID, hlc *HLC, r *pb.MerkleRange) {
 		}
 		hlc.Observe(rec.HLC)
 		applied, _ := m.store.Apply(rec)
-		if applied && m.onApplied != nil {
+		if !applied {
+			continue
+		}
+		if m.onApplied != nil {
 			m.onApplied(rec)
+		}
+		if m.rumor != nil {
+			m.rumor(from, rec)
 		}
 	}
 	if r.Truncated && len(r.Records) > 0 {

@@ -44,7 +44,7 @@ type nodeImpl struct {
 	gate *inboundGate
 
 	// Atomic role/partition
-	role   atomic.Uint32 // Role
+	role      atomic.Uint32 // Role
 	partition atomic.Value  // string
 
 	// Pause/Resume hooks
@@ -52,8 +52,8 @@ type nodeImpl struct {
 	onResumed func()
 
 	// Role/partition change hooks
-	rolesMu        sync.Mutex
-	onRoleChange   []func(prev, next Role)
+	rolesMu           sync.Mutex
+	onRoleChange      []func(prev, next Role)
 	partitionMu       sync.Mutex
 	onPartitionChange []func(prev, next string)
 
@@ -118,6 +118,7 @@ func Wire(n Node, t Transport) error {
 	impl.merkle = newMerkle(impl.store, impl.peers, t, impl.cfg.NowFn, impl.cfg.MerkleProbeInterval)
 	impl.merkle.SetInboundGate(impl.gate)
 	impl.plum.SetMerkle(impl.merkle)
+	impl.merkle.SetRumor(impl.plum.forwardRepaired)
 	impl.plum.SetOnApplied(impl.recordAccepted)
 	impl.merkle.SetOnApplied(impl.recordAccepted)
 	impl.content = newContentTopic(impl)

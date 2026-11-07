@@ -454,6 +454,30 @@ func (e *plumtreesEngine) eagerPushToTreeEdges(r Record) {
 	}
 }
 
+// forwardRepaired starts the rumor for a record merkleEngine.HandleRange
+// applied as new: an eager push at the full TTL to the tree edges
+// bestTreeEdges returns, from excepted because the range came from it, then
+// a lazy push to the non-tree edges, as Publish does for a local record. A
+// pending IHave for the record is cleared as handleEager clears it, since
+// the record is now held. It runs inside HandleRange, so no forwarding
+// outlives the frame that carried the record.
+func (e *plumtreesEngine) forwardRepaired(from NodeID, r Record) {
+	e.missingMu.Lock()
+	delete(e.missingIHaves, ihaveKey{r.Topic, r.NodeID, r.Key, r.HLC})
+	e.missingMu.Unlock()
+
+	frame, err := encodeFrame(frameEagerPush(r, e.eagerTTL))
+	if err == nil {
+		for _, edge := range e.bestTreeEdges() {
+			if edge == from {
+				continue
+			}
+			_ = e.tport.Send(edge, frame)
+		}
+	}
+	e.lazyPushToNonTreeEdges(r)
+}
+
 func (e *plumtreesEngine) eagerForward(except NodeID, r Record, ttl uint32) {
 	frame, err := encodeFrame(frameEagerPush(r, ttl))
 	if err != nil {
