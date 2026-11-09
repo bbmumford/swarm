@@ -9,7 +9,6 @@ import (
 	"time"
 )
 
-
 // NodeID is an opaque per-peer identifier (Ed25519 public key hex-encoded).
 type NodeID string
 

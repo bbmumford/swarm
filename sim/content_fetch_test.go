@@ -18,8 +18,8 @@ import (
 
 // memContentProvider is an in-memory ContentProvider for tests.
 type memContentProvider struct {
-	mu     sync.RWMutex
-	blobs  map[[32]byte][]byte
+	mu    sync.RWMutex
+	blobs map[[32]byte][]byte
 }
 
 func newMemContentProvider() *memContentProvider {

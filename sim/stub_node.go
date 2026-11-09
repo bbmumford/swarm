@@ -18,8 +18,8 @@ type StubNode struct {
 	peers     []NodeID
 	mu        sync.Mutex
 	records   map[string]map[NodeID]Record // records[topic][node_id]
-	pending   []Frame                       // outbound queue
-	delivered map[[32]byte]struct{}         // dedup hashes
+	pending   []Frame                      // outbound queue
+	delivered map[[32]byte]struct{}        // dedup hashes
 }
 
 // NewStubNode creates a StubNode with the given ID + peer list.

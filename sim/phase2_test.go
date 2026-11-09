@@ -178,10 +178,10 @@ func newNullTransport(_ interface{ Tick(time.Time) }) *nullTransport {
 	return &nullTransport{id: "test-node"}
 }
 
-func (n *nullTransport) LocalID() swarm.NodeID     { return n.id }
+func (n *nullTransport) LocalID() swarm.NodeID           { return n.id }
 func (n *nullTransport) Send(swarm.NodeID, []byte) error { return nil }
-func (n *nullTransport) Broadcast([]byte) error    { return nil }
-func (n *nullTransport) Peers() []swarm.NodeID     { return nil }
+func (n *nullTransport) Broadcast([]byte) error          { return nil }
+func (n *nullTransport) Peers() []swarm.NodeID           { return nil }
 func (n *nullTransport) OnReceive(fn func(from swarm.NodeID, frame []byte)) {
 	n.onReceive = fn
 }

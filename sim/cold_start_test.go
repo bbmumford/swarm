@@ -14,12 +14,12 @@ import (
 // lives in TestSwarmNode_ColdStartConvergence.
 func TestColdStartConvergence(t *testing.T) {
 	for _, tc := range []struct {
-		name       string
-		numNodes   int
-		latencyMs  int
-		jitterMs   int
-		lossPct    float64
-		maxSteps   int
+		name      string
+		numNodes  int
+		latencyMs int
+		jitterMs  int
+		lossPct   float64
+		maxSteps  int
 	}{
 		{name: "8_nodes_lan", numNodes: 8, latencyMs: 5, jitterMs: 2, lossPct: 0, maxSteps: 500},
 		{name: "32_nodes_wan", numNodes: 32, latencyMs: 30, jitterMs: 10, lossPct: 0, maxSteps: 2000},

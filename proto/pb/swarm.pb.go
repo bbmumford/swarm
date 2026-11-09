@@ -30,8 +30,9 @@ const (
 // at the transport layer — consumers register typed subscribers per Topic.
 //
 // HLC (hybrid logical clock) gives total order. Sig covers:
-//   topic || node_id || hlc || body || tombstone || pub_key ||
-//   observer_node_id || observed_at_unix_ms
+//
+//	topic || node_id || hlc || body || tombstone || pub_key ||
+//	observer_node_id || observed_at_unix_ms
 //
 // node_id is an opaque identifier (caller-defined; may be a fingerprint or
 // other non-reversible encoding of pub_key). pub_key is the raw 32-byte

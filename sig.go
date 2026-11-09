@@ -13,10 +13,11 @@ import (
 // signature input. Excludes Sig (because Sig is what we're producing).
 //
 // Layout:
-//   topic_len:u16 || topic || node_id || hlc:u64 || tombstone:u8 ||
-//   body_len:u32 || body || pub_key ||
-//   observer_node_id_len:u16 || observer_node_id || observed_at_ms:i64 ||
-//   [ key_len:u16 || key ]      <- emitted ONLY when Key != ""
+//
+//	topic_len:u16 || topic || node_id || hlc:u64 || tombstone:u8 ||
+//	body_len:u32 || body || pub_key ||
+//	observer_node_id_len:u16 || observer_node_id || observed_at_ms:i64 ||
+//	[ key_len:u16 || key ]      <- emitted ONLY when Key != ""
 //
 // PubKey is included so a forger cannot rebind a valid sig to a different
 // PubKey claim (which would otherwise let a publisher impersonate any
