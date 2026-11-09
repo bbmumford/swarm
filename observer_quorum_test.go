@@ -15,13 +15,13 @@ import (
 // apply/deliver decision, which must not depend on any peer existing.
 type loopbackTransport struct{ id NodeID }
 
-func (l *loopbackTransport) LocalID() NodeID              { return l.id }
-func (l *loopbackTransport) Send(NodeID, []byte) error    { return nil }
-func (l *loopbackTransport) Broadcast([]byte) error       { return nil }
-func (l *loopbackTransport) Peers() []NodeID              { return nil }
+func (l *loopbackTransport) LocalID() NodeID                { return l.id }
+func (l *loopbackTransport) Send(NodeID, []byte) error      { return nil }
+func (l *loopbackTransport) Broadcast([]byte) error         { return nil }
+func (l *loopbackTransport) Peers() []NodeID                { return nil }
 func (l *loopbackTransport) OnReceive(func(NodeID, []byte)) {}
-func (l *loopbackTransport) OnPeerJoin(func(NodeID))      {}
-func (l *loopbackTransport) OnPeerLeave(func(NodeID))     {}
+func (l *loopbackTransport) OnPeerJoin(func(NodeID))        {}
+func (l *loopbackTransport) OnPeerLeave(func(NodeID))       {}
 
 func mustNode(t *testing.T, id NodeID) Node {
 	t.Helper()

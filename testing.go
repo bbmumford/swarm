@@ -35,7 +35,7 @@ func InternalStore(n Node) StoreView {
 // rawStoreView adapts recordStore with tombstone-inclusive reads.
 type rawStoreView struct{ s *recordStore }
 
-func (v rawStoreView) Topics() []Topic                    { return v.s.Topics() }
-func (v rawStoreView) TopicRecords(topic Topic) []Record  { return v.s.topicRecordsAll(topic) }
-func (v rawStoreView) TopicCount(topic Topic) int         { return v.s.TopicCount(topic) }
-func (v rawStoreView) Count() int                         { return v.s.Count() }
+func (v rawStoreView) Topics() []Topic                   { return v.s.Topics() }
+func (v rawStoreView) TopicRecords(topic Topic) []Record { return v.s.topicRecordsAll(topic) }
+func (v rawStoreView) TopicCount(topic Topic) int        { return v.s.TopicCount(topic) }
+func (v rawStoreView) Count() int                        { return v.s.Count() }

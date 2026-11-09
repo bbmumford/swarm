@@ -30,12 +30,12 @@ type Frame struct {
 
 // Edge describes a directed link between two nodes.
 type Edge struct {
-	From      NodeID
-	To        NodeID
-	LatencyMs int     // base latency in ms
-	JitterMs  int     // +/- ms random jitter
-	LossPct   float64 // 0.0 - 1.0
-	BandwidthBps uint64 // 0 = unlimited
+	From         NodeID
+	To           NodeID
+	LatencyMs    int     // base latency in ms
+	JitterMs     int     // +/- ms random jitter
+	LossPct      float64 // 0.0 - 1.0
+	BandwidthBps uint64  // 0 = unlimited
 }
 
 // Node represents a participant in the simulation. The Step method drives
@@ -65,12 +65,12 @@ type Record struct {
 // Edges. Step(t) advances the clock by 1 ms, fires each Node's Step, and
 // delivers any frames whose latency has elapsed.
 type Mesh struct {
-	mu          sync.Mutex
-	nodes       map[NodeID]Node
-	edges       map[NodeID]map[NodeID]Edge // edges[from][to]
+	mu            sync.Mutex
+	nodes         map[NodeID]Node
+	edges         map[NodeID]map[NodeID]Edge // edges[from][to]
 	pendingFrames pendingHeap                // min-heap by deliveryAt
-	now         VirtualTime
-	rng         *rand.Rand
+	now           VirtualTime
+	rng           *rand.Rand
 }
 
 // pendingFrame is a Frame scheduled for delivery.

@@ -20,8 +20,8 @@ type peerCtx struct {
 	cfg PerPeerConfig
 
 	// Adaptive state
-	lastRTT       time.Duration
-	rttEMA        time.Duration // exponential moving average
+	lastRTT          time.Duration
+	rttEMA           time.Duration // exponential moving average
 	missedKeepalives int
 
 	// Backpressure

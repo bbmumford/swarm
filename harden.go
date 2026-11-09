@@ -64,9 +64,9 @@ const MaxKeyBytes = 1<<16 - 1
 const DefaultMaxKeysPerNodePerTopic = 4096
 
 var (
-	errGateTooLarge  = errors.New("swarm: inbound record body exceeds maximum size")
-	errGateSkew      = errors.New("swarm: inbound record HLC too far in the future")
-	errGateBinding   = errors.New("swarm: record NodeID does not bind to its public key")
+	errGateTooLarge   = errors.New("swarm: inbound record body exceeds maximum size")
+	errGateSkew       = errors.New("swarm: inbound record HLC too far in the future")
+	errGateBinding    = errors.New("swarm: record NodeID does not bind to its public key")
 	errGateKeyTooLong = errors.New("swarm: record key exceeds MaxKeyBytes")
 )
 

@@ -69,7 +69,9 @@ func AgentFIMBaselinesTopic(partitionID, pathHashHex string) Topic {
 }
 
 // AgentOSQueryPacksTopic carries OSQueryPackManifest records.
-func AgentOSQueryPacksTopic(partitionID string) Topic { return Topic("agent.osquery-packs." + partitionID) }
+func AgentOSQueryPacksTopic(partitionID string) Topic {
+	return Topic("agent.osquery-packs." + partitionID)
+}
 
 // AgentLiveQueryCacheTopic carries LiveQueryResultManifest records
 // (opt-in cache of recent live-query results).
@@ -113,7 +115,9 @@ func AgentDiscoveredAssetsTopic(partitionID string) Topic {
 func AgentPrintersTopic(partitionID string) Topic { return Topic("agent.printers." + partitionID) }
 
 // AgentServiceStateTopic carries ServiceStateRecord records.
-func AgentServiceStateTopic(partitionID string) Topic { return Topic("agent.service-state." + partitionID) }
+func AgentServiceStateTopic(partitionID string) Topic {
+	return Topic("agent.service-state." + partitionID)
+}
 
 // AgentInventoryDeltasTopic carries InventoryDelta records.
 func AgentInventoryDeltasTopic(partitionID string) Topic {
@@ -123,7 +127,9 @@ func AgentInventoryDeltasTopic(partitionID string) Topic {
 // ---------- Agent fabric topics: security-critical ----------
 
 // AgentRevokedKeysTopic carries RevocationNotice records.
-func AgentRevokedKeysTopic(partitionID string) Topic { return Topic("agent.revoked-keys." + partitionID) }
+func AgentRevokedKeysTopic(partitionID string) Topic {
+	return Topic("agent.revoked-keys." + partitionID)
+}
 
 // AgentNetworkPSKTopic carries NetworkPSKRotation records scoped to an
 // epoch.
@@ -176,7 +182,9 @@ func AgentEventTopic(partitionID, eventType string) Topic {
 }
 
 // AgentThreatSignalTopic carries ThreatSignal records.
-func AgentThreatSignalTopic(partitionID string) Topic { return Topic("agent.threat-signal." + partitionID) }
+func AgentThreatSignalTopic(partitionID string) Topic {
+	return Topic("agent.threat-signal." + partitionID)
+}
 
 // AgentDNSCacheTopic carries DNSCacheEntry records (privacy-aware
 // opt-in).
