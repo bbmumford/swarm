@@ -38,21 +38,24 @@ message TrustManifest {
 }
 
 // KeyRotationEnvelope is published when a region root (RR) or a partition
-// root (PR) rotates. Lives on `agent.keys.<partition>`. Body of the
-// corresponding ContentTopic fetch
-// contains the actual signed certificate.
+// root (PR) rotates, or when the partition's network key does. Lives on
+// `agent.keys.<partition>`. For a root, the body of the corresponding
+// ContentTopic fetch contains the actual signed certificate. For a network
+// key, the envelope carries the old and new key fingerprints only: members
+// collect the key itself through PollEnrollment, never from the topic.
 message KeyRotationEnvelope {
   enum KeyKind {
     KEY_UNKNOWN = 0;
     KEY_REGION_ROOT = 1;     // RR rotation
     KEY_PARTITION_ROOT = 2;  // PR rotation
+    KEY_NETWORK = 3;         // the partition's network key (Noise PSK) rotation
   }
   KeyKind kind = 1;
   bytes   old_fingerprint = 2;
   bytes   new_fingerprint = 3;
-  bytes   new_key_hash = 4;       // hash of the new key+cert blob (ContentTopic)
+  bytes   new_key_hash = 4;       // hash of the new key+cert blob (ContentTopic); empty for KEY_NETWORK
   uint64  grace_period_s = 5;     // seconds; 0 = immediate (compromise)
-  bytes   signed_by = 6;          // pubkey that signed (RR for a PR rotation; OR for an RR rotation)
+  bytes   signed_by = 6;          // pubkey that signed (RR for a PR rotation; OR for an RR rotation; the partition's active PR for KEY_NETWORK)
   bytes   signature = 7;          // signature over the above
 }
 

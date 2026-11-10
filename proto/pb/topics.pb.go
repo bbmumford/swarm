@@ -33,6 +33,7 @@ const (
 	KeyRotationEnvelope_KEY_UNKNOWN        KeyRotationEnvelope_KeyKind = 0
 	KeyRotationEnvelope_KEY_REGION_ROOT    KeyRotationEnvelope_KeyKind = 1 // RR rotation
 	KeyRotationEnvelope_KEY_PARTITION_ROOT KeyRotationEnvelope_KeyKind = 2 // PR rotation
+	KeyRotationEnvelope_KEY_NETWORK        KeyRotationEnvelope_KeyKind = 3 // the partition's network key (Noise PSK) rotation
 )
 
 // Enum value maps for KeyRotationEnvelope_KeyKind.
@@ -41,11 +42,13 @@ var (
 		0: "KEY_UNKNOWN",
 		1: "KEY_REGION_ROOT",
 		2: "KEY_PARTITION_ROOT",
+		3: "KEY_NETWORK",
 	}
 	KeyRotationEnvelope_KeyKind_value = map[string]int32{
 		"KEY_UNKNOWN":        0,
 		"KEY_REGION_ROOT":    1,
 		"KEY_PARTITION_ROOT": 2,
+		"KEY_NETWORK":        3,
 	}
 )
 
@@ -393,17 +396,19 @@ func (x *TrustManifest) GetSig() []byte {
 }
 
 // KeyRotationEnvelope is published when a region root (RR) or a partition
-// root (PR) rotates. Lives on `agent.keys.<partition>`. Body of the
-// corresponding ContentTopic fetch
-// contains the actual signed certificate.
+// root (PR) rotates, or when the partition's network key does. Lives on
+// `agent.keys.<partition>`. For a root, the body of the corresponding
+// ContentTopic fetch contains the actual signed certificate. For a network
+// key, the envelope carries the old and new key fingerprints only: members
+// collect the key itself through PollEnrollment, never from the topic.
 type KeyRotationEnvelope struct {
 	state          protoimpl.MessageState      `protogen:"open.v1"`
 	Kind           KeyRotationEnvelope_KeyKind `protobuf:"varint,1,opt,name=kind,proto3,enum=swarm.v1.KeyRotationEnvelope_KeyKind" json:"kind,omitempty"`
 	OldFingerprint []byte                      `protobuf:"bytes,2,opt,name=old_fingerprint,json=oldFingerprint,proto3" json:"old_fingerprint,omitempty"`
 	NewFingerprint []byte                      `protobuf:"bytes,3,opt,name=new_fingerprint,json=newFingerprint,proto3" json:"new_fingerprint,omitempty"`
-	NewKeyHash     []byte                      `protobuf:"bytes,4,opt,name=new_key_hash,json=newKeyHash,proto3" json:"new_key_hash,omitempty"`        // hash of the new key+cert blob (ContentTopic)
+	NewKeyHash     []byte                      `protobuf:"bytes,4,opt,name=new_key_hash,json=newKeyHash,proto3" json:"new_key_hash,omitempty"`        // hash of the new key+cert blob (ContentTopic); empty for KEY_NETWORK
 	GracePeriodS   uint64                      `protobuf:"varint,5,opt,name=grace_period_s,json=gracePeriodS,proto3" json:"grace_period_s,omitempty"` // seconds; 0 = immediate (compromise)
-	SignedBy       []byte                      `protobuf:"bytes,6,opt,name=signed_by,json=signedBy,proto3" json:"signed_by,omitempty"`                // pubkey that signed (RR for a PR rotation; OR for an RR rotation)
+	SignedBy       []byte                      `protobuf:"bytes,6,opt,name=signed_by,json=signedBy,proto3" json:"signed_by,omitempty"`                // pubkey that signed (RR for a PR rotation; OR for an RR rotation; the partition's active PR for KEY_NETWORK)
 	Signature      []byte                      `protobuf:"bytes,7,opt,name=signature,proto3" json:"signature,omitempty"`                              // signature over the above
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
@@ -3555,7 +3560,7 @@ const file_topics_proto_rawDesc = "" +
 	"\ard_hash\x18\x02 \x01(\fR\x06rdHash\x12\x1c\n" +
 	"\tpublisher\x18\x03 \x01(\fR\tpublisher\x12!\n" +
 	"\fpublished_at\x18\x04 \x01(\x03R\vpublishedAt\x12\x10\n" +
-	"\x03sig\x18\x05 \x01(\fR\x03sig\"\xee\x02\n" +
+	"\x03sig\x18\x05 \x01(\fR\x03sig\"\xff\x02\n" +
 	"\x13KeyRotationEnvelope\x129\n" +
 	"\x04kind\x18\x01 \x01(\x0e2%.swarm.v1.KeyRotationEnvelope.KeyKindR\x04kind\x12'\n" +
 	"\x0fold_fingerprint\x18\x02 \x01(\fR\x0eoldFingerprint\x12'\n" +
@@ -3564,11 +3569,12 @@ const file_topics_proto_rawDesc = "" +
 	"newKeyHash\x12$\n" +
 	"\x0egrace_period_s\x18\x05 \x01(\x04R\fgracePeriodS\x12\x1b\n" +
 	"\tsigned_by\x18\x06 \x01(\fR\bsignedBy\x12\x1c\n" +
-	"\tsignature\x18\a \x01(\fR\tsignature\"G\n" +
+	"\tsignature\x18\a \x01(\fR\tsignature\"X\n" +
 	"\aKeyKind\x12\x0f\n" +
 	"\vKEY_UNKNOWN\x10\x00\x12\x13\n" +
 	"\x0fKEY_REGION_ROOT\x10\x01\x12\x16\n" +
-	"\x12KEY_PARTITION_ROOT\x10\x02\"\x87\x02\n" +
+	"\x12KEY_PARTITION_ROOT\x10\x02\x12\x0f\n" +
+	"\vKEY_NETWORK\x10\x03\"\x87\x02\n" +
 	"\x11BlocklistManifest\x12\x17\n" +
 	"\alist_id\x18\x01 \x01(\tR\x06listId\x12%\n" +
 	"\x0eblocklist_hash\x18\x02 \x01(\fR\rblocklistHash\x12\x1d\n" +
