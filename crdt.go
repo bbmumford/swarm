@@ -56,13 +56,14 @@ type recordStore struct {
 	observerCorroborationWindow time.Duration
 
 	// observerRoleCheck — when non-nil, rejects observer attestations
-	// for which this returns false. Receives both the claimed
-	// ObserverNodeID and the Sig-verified PubKey so the gate can bind
-	// PubKey to a known-anchor pubkey (without that bind a Sybil
-	// attacker can claim any NodeID and supply their own keypair).
-	// Wired by HSTLES Library from its role_table; nil for tests
-	// (accept all observers).
-	observerRoleCheck func(observer NodeID, pubKey []byte) bool
+	// for which this returns false. Receives the claimed ObserverNodeID
+	// and the Sig-verified PubKey so the gate can bind PubKey to a
+	// known-anchor pubkey (without that bind a Sybil attacker can claim
+	// any NodeID and supply their own keypair), and the attestation's
+	// subject (its NodeID) so the gate can refuse an observer attesting
+	// about itself. Wired by HSTLES Library from its role_table; nil for
+	// tests (accept all observers).
+	observerRoleCheck func(observer NodeID, pubKey []byte, subject NodeID) bool
 
 	// nowFn — wall clock for attestation-window pruning. Defaults to
 	// time.Now; the deterministic simulator overrides via SetNowFn.
@@ -207,12 +208,12 @@ func (s *recordStore) setCaps(maxTopics, maxRecordsPerTopic, maxKeysPerNode, max
 }
 
 // SetObserverRoleCheck wires the anchor-role gate (or any other gate) for
-// observer attestations. The gate receives both the claimed
-// ObserverNodeID and the Sig-verified PubKey; it MUST verify the
-// (NodeID, PubKey) binding against application-layer trust state (e.g.
-// the HSTLES role_table) to prevent Sybil. Pass nil to disable the gate
-// (accept all observers — only appropriate for tests).
-func (s *recordStore) SetObserverRoleCheck(fn func(observer NodeID, pubKey []byte) bool) {
+// observer attestations. The gate receives the claimed ObserverNodeID,
+// the Sig-verified PubKey and the attestation's subject (its NodeID); it
+// MUST verify the (NodeID, PubKey) binding against application-layer
+// trust state (e.g. the HSTLES role_table) to prevent Sybil. Pass nil to
+// disable the gate (accept all observers — only appropriate for tests).
+func (s *recordStore) SetObserverRoleCheck(fn func(observer NodeID, pubKey []byte, subject NodeID) bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.observerRoleCheck = fn
@@ -353,6 +354,28 @@ func (s *recordStore) ApplyExt(r Record) (applied bool, replaced bool, accumulat
 	return false, true, false
 }
 
+// countedLocked returns the attestations in set that count toward the
+// quorum: all of them while fewer than K are held or no gate is wired, and
+// once K are held only those whose observer the gate admits now, asked with
+// each attestation's own observer, key and subject. The gate is asked again
+// because its answer for an observer can change after that observer's
+// attestation was admitted: loom's gate admits one node per anchor key, the
+// one whose endorsement is the freshest, so each of a holder's machines is
+// admitted while its own record is the fresher, and without this check both
+// of their attestations would count, one anchor key reaching K=2 alone. An
+// attestation refused now stays in set and counts again once its observer is
+// admitted, until the corroboration window prunes it. applyAttestationLocked
+// calls it under s.mu after pruning the window, as it calls the gate.
+func (s *recordStore) countedLocked(set map[NodeID]Record) []Record {
+	counted := make([]Record, 0, len(set))
+	for _, a := range set {
+		if len(set) < s.observerQuorum || s.observerRoleCheck == nil || s.observerRoleCheck(a.ObserverNodeID, a.PubKey, a.NodeID) {
+			counted = append(counted, a)
+		}
+	}
+	return counted
+}
+
 // applyAttestationLocked accumulates an observer attestation and, when
 // K-of-N within W is satisfied, synthesises a tombstone in the standard
 // records slot. Called under s.mu.
@@ -360,7 +383,7 @@ func (s *recordStore) applyAttestationLocked(ts *topicStore, att Record) (applie
 	// v1 anchor-only trust gate — reject attestations from non-anchor
 	// observers (or observers whose claimed NodeID does not bind to the
 	// Sig-verified PubKey) when the role check is wired.
-	if s.observerRoleCheck != nil && !s.observerRoleCheck(att.ObserverNodeID, att.PubKey) {
+	if s.observerRoleCheck != nil && !s.observerRoleCheck(att.ObserverNodeID, att.PubKey, att.NodeID) {
 		return false, false, false
 	}
 
@@ -447,9 +470,11 @@ func (s *recordStore) applyAttestationLocked(ts *topicStore, att Record) (applie
 		}
 	}
 
-	// Quorum check — K distinct observers (set keys are observer NodeIDs,
-	// so map size IS distinct-observer count after pruning).
-	if len(set) < s.observerQuorum {
+	// Quorum check — K distinct observers the gate admits now (set keys are
+	// observer NodeIDs, so map size IS distinct-observer count after
+	// pruning; countedLocked asks the gate again once it reaches K).
+	counted := s.countedLocked(set)
+	if len(counted) < s.observerQuorum {
 		// GC the empty set so a target that never crosses quorum doesn't
 		// hold an empty map entry forever. The owner-publish path
 		// already deletes the entire entry on restore, but a never-
@@ -470,7 +495,7 @@ func (s *recordStore) applyAttestationLocked(ts *topicStore, att Record) (applie
 	// restore (which is automatic given the target's HLC monotonically
 	// increases per-node from time-of-publish).
 	maxHLC := uint64(0)
-	for _, a := range set {
+	for _, a := range counted {
 		if a.HLC > maxHLC {
 			maxHLC = a.HLC
 		}

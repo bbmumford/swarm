@@ -468,12 +468,13 @@ func (n *nodeImpl) PublishObserverTombstone(topic Topic, target NodeID) error {
 
 // SetObserverRoleCheck wires the application's anchor-role gate for
 // observer attestations into the recordStore. The gate receives the
-// claimed ObserverNodeID and the Sig-verified PubKey; it MUST verify
-// the (NodeID, PubKey) binding against application trust state (e.g.
-// HSTLES's role_table). Returning false from the gate rejects the
-// attestation outright. Wire this once at startup, after the role_table
-// has been initialised.
-func (n *nodeImpl) SetObserverRoleCheck(fn func(observer NodeID, pubKey []byte) bool) {
+// claimed ObserverNodeID, the Sig-verified PubKey and the attestation's
+// subject (the target it says is dead); it MUST verify the (NodeID,
+// PubKey) binding against application trust state (e.g. HSTLES's
+// role_table). Returning false from the gate rejects the attestation
+// outright. Wire this once at startup, after the role_table has been
+// initialised.
+func (n *nodeImpl) SetObserverRoleCheck(fn func(observer NodeID, pubKey []byte, subject NodeID) bool) {
 	n.store.SetObserverRoleCheck(fn)
 }
 

@@ -352,12 +352,18 @@ type Node interface {
 
 	// SetObserverRoleCheck wires an application-layer trust gate for
 	// observer attestations. The gate is called with the attesting peer's
-	// claimed NodeID and Sig-verified PubKey and must return true only
-	// when the (NodeID, PubKey) binding maps to a trusted observer (e.g.
-	// a known anchor in HSTLES's role_table). Without the gate any peer
-	// can mint attestations; with the gate set, only anchor-owned key
-	// pairs count toward the K-of-N quorum.
-	SetObserverRoleCheck(fn func(observer NodeID, pubKey []byte) bool)
+	// claimed NodeID, its Sig-verified PubKey and the attestation's
+	// subject, the target it says is dead, and must return true only when
+	// the (NodeID, PubKey) binding maps to a trusted observer (e.g. a
+	// known anchor in HSTLES's role_table) that may attest about that
+	// subject. Without the gate any peer can mint attestations; with the
+	// gate set, only anchor-owned key pairs count toward the K-of-N
+	// quorum. The subject is the attestation Record's own NodeID, so
+	// handing it to the gate changes nothing on the wire; it is handed
+	// because PublishObserverTombstone's refusal of a self-attestation
+	// binds only an honest sender, and a peer's crafted attestation about
+	// itself is refused only by a gate that sees whom it is about.
+	SetObserverRoleCheck(fn func(observer NodeID, pubKey []byte, subject NodeID) bool)
 
 	// SetRole atomically updates this Node's role. Triggers tree-edge
 	// rebalance + topic-publish duty changes. Idempotent.
