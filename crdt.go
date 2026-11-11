@@ -61,8 +61,12 @@ type recordStore struct {
 	// known-anchor pubkey (without that bind a Sybil attacker can claim
 	// any NodeID and supply their own keypair), and the attestation's
 	// subject (its NodeID) so the gate can refuse an observer attesting
-	// about itself. Wired by HSTLES Library from its role_table; nil for
-	// tests (accept all observers).
+	// about itself. SetObserverRoleCheck sets it: loom node's InitSwarm
+	// wires observerCheck, which asks its anchor-endorsement policy over
+	// the fleet.peer records its RoleTable holds, and orb's mesh fabric
+	// wires observerGate, which binds the observer id to hex(PubKey) and
+	// refuses an observer reporting itself. nil accepts every observer,
+	// which only tests leave.
 	observerRoleCheck func(observer NodeID, pubKey []byte, subject NodeID) bool
 
 	// nowFn — wall clock for attestation-window pruning. Defaults to
@@ -211,8 +215,10 @@ func (s *recordStore) setCaps(maxTopics, maxRecordsPerTopic, maxKeysPerNode, max
 // observer attestations. The gate receives the claimed ObserverNodeID,
 // the Sig-verified PubKey and the attestation's subject (its NodeID); it
 // MUST verify the (NodeID, PubKey) binding against application-layer
-// trust state (e.g. the HSTLES role_table) to prevent Sybil. Pass nil to
-// disable the gate (accept all observers — only appropriate for tests).
+// trust state to prevent Sybil: loom node's InitSwarm wires one over the
+// fleet.peer records its RoleTable holds, and orb's mesh fabric one over
+// its hex(PubKey) node ids. Pass nil to disable the gate (accept all
+// observers — only appropriate for tests).
 func (s *recordStore) SetObserverRoleCheck(fn func(observer NodeID, pubKey []byte, subject NodeID) bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
