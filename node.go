@@ -418,8 +418,8 @@ func (n *nodeImpl) PublishKeyedTombstone(topic Topic, key string) error {
 // within the corroboration window — see recordStore.applyAttestationLocked.
 //
 // Callers should restrict invocation to peers with the anchor role
-// (HSTLES Library does this at the call site in
-// mesh/node/peer_connections.go) and pair this call with the
+// (loom node's ConnectionManager.shouldEmitObserverTombstone does so
+// before emitPeerTombstone calls this) and pair this call with the
 // corresponding LAD EvictPeer so the LAD directory converges in
 // lock-step.
 func (n *nodeImpl) PublishObserverTombstone(topic Topic, target NodeID) error {
@@ -470,9 +470,10 @@ func (n *nodeImpl) PublishObserverTombstone(topic Topic, target NodeID) error {
 // observer attestations into the recordStore. The gate receives the
 // claimed ObserverNodeID, the Sig-verified PubKey and the attestation's
 // subject (the target it says is dead); it MUST verify the (NodeID,
-// PubKey) binding against application trust state (e.g. HSTLES's
-// role_table). Returning false from the gate rejects the attestation
-// outright. Wire this once at startup, after the role_table has been
+// PubKey) binding against application trust state: loom node's InitSwarm
+// wires observerCheck over its RoleTable, and orb's mesh fabric wires
+// observerGate. Returning false from the gate rejects the attestation
+// outright. Wire this once at startup, after that trust state has been
 // initialised.
 func (n *nodeImpl) SetObserverRoleCheck(fn func(observer NodeID, pubKey []byte, subject NodeID) bool) {
 	n.store.SetObserverRoleCheck(fn)

@@ -58,8 +58,8 @@ func mustNode(t *testing.T, id NodeID) Node {
 // subscribers fired on its OWN single attestation. K=1 on the emitter, K=2
 // everywhere else.
 //
-// That asymmetry is not academic. HSTLES Library bridges this topic straight
-// into the LAD directory (mesh/node/lad_reach_bridge.go), branching on bare
+// That asymmetry is not academic. loom's node bridges this topic straight
+// into the LAD directory (node/lad_reach_bridge.go), branching on bare
 // r.Tombstone — so on the emitting anchor a single un-corroborated attestation
 // evicted a peer's Reach + Member records locally. It was masked only because
 // the sole caller (sweepZombieSessions) already evicted that peer by design.
