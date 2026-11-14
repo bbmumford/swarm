@@ -210,7 +210,7 @@ func inject(t *testing.T, net *memNet, target *testNode, from NodeID, r Record) 
 	recv(from, frame)
 }
 
-// ---------- Blocker 1: lifecycle ----------
+// ---------- Lifecycle: Start and Stop ----------
 
 func TestLifecycleStartStopIdempotency(t *testing.T) {
 	net := newMemNet()
@@ -255,8 +255,8 @@ func TestLifecycleStartStopIdempotency(t *testing.T) {
 	}
 }
 
-// ---------- Blockers 1+2: production ticker drives merkle; empty node
-// learns unknown topics via reciprocal reconciliation ----------
+// ---------- The production ticker drives merkle; an empty node
+// learns unknown topics through reciprocal reconciliation ----------
 
 func TestPeriodicMerkleConvergesEmptyJoiner(t *testing.T) {
 	net := newMemNet()
@@ -266,10 +266,11 @@ func TestPeriodicMerkleConvergesEmptyJoiner(t *testing.T) {
 	}
 
 	// B joins EMPTY, with no session-join ProbePeer assist — only the
-	// periodic production ticker runs. Pre-hardening this never
-	// converged: (a) the production tick loop never called merkle.Tick,
-	// (b) B holds no topics so it never probes, and (c) A's probe of B
-	// only moved records B→A. The reciprocal probe closes the loop.
+	// periodic production ticker runs. B holds no topics, so it never
+	// starts a probe, and A's probe of B moves records B→A only. It
+	// converges because the production tick loop calls merkle.Tick and
+	// HandleProbe answers a root mismatch with the reciprocal probe that
+	// moves A's records to B.
 	b := startNode(t, net, Config{})
 	ok := waitUntil(t, 5*time.Second, func() bool {
 		_, ok := b.impl.store.getRaw(Topic("t.discover"), a.id)
@@ -280,7 +281,7 @@ func TestPeriodicMerkleConvergesEmptyJoiner(t *testing.T) {
 	}
 }
 
-// ---------- Blocker 3: attestation relay + synth exclusion ----------
+// ---------- Attestation relay and synth exclusion ----------
 
 func TestAttestationRelayAcrossSparseTopology(t *testing.T) {
 	net := newMemNet()
@@ -314,8 +315,8 @@ func TestAttestationRelayAcrossSparseTopology(t *testing.T) {
 
 	// A and C each observe the target dead. Their attestations must cross
 	// the chain (A's via B to C and vice versa) so EVERY node counts 2
-	// distinct observers — pre-hardening a below-quorum attestation was
-	// never relayed past the first hop, so C never saw A's.
+	// distinct observers: a below-quorum attestation is relayed past the
+	// first hop, or C would never see A's.
 	if err := a.node.PublishObserverTombstone(topic, target); err != nil {
 		t.Fatal(err)
 	}
@@ -344,7 +345,7 @@ func TestAttestationRelayAcrossSparseTopology(t *testing.T) {
 	}
 }
 
-// ---------- Blockers 4+5: inbound gate ----------
+// ---------- The inbound gate (inboundGate) ----------
 
 func TestInboundGateRejects(t *testing.T) {
 	net := newMemNet()
@@ -362,11 +363,14 @@ func TestInboundGateRejects(t *testing.T) {
 	attackerID := nodeIDFromPub(attacker.Public().(ed25519.PublicKey))
 	now := uint64(time.Now().UnixMilli())
 
-	// Oversize body (inbound previously skipped the MaxRecordBytes cap).
+	// Oversize body: the inbound gate holds a remote record to
+	// Config.MaxRecordBytes, as local Publish holds its own.
 	big := signedRecord("t.size", attacker, attackerID, packHLC(now, 0), make([]byte, 4096))
 	inject(t, net, a, attackerID, big)
 
-	// Far-future HLC: raw remote HLC previously pinned the slot forever.
+	// Far-future HLC: refused by the clock-skew check, since the CRDT winner
+	// comparison reads the raw remote HLC and one far-future stamp would pin
+	// the slot.
 	future := signedRecord("t.skew", attacker, attackerID, packHLC(now+3_600_000, 0), []byte("x"))
 	inject(t, net, a, attackerID, future)
 
@@ -422,7 +426,7 @@ func TestNodeKeyBindingEnforced(t *testing.T) {
 	}
 }
 
-// ---------- Blocker 6: SetPartition broadcast + subscribe replay ----------
+// ---------- SetPartition broadcast and subscribe replay ----------
 
 func TestSetPartitionTombstoneReachesPeers(t *testing.T) {
 	net := newMemNet()
@@ -440,9 +444,9 @@ func TestSetPartitionTombstoneReachesPeers(t *testing.T) {
 		t.Fatal("record never reached B")
 	}
 
-	// Pre-hardening: the partition-rebind tombstone was applied locally then
-	// routed through Publish, whose second Apply returned applied=false —
-	// so it NEVER hit the wire and peers kept the stale record forever.
+	// SetPartition applies the partition-rebind tombstone locally and then
+	// broadcasts it, not Publish, whose second Apply would answer
+	// applied=false and send nothing, so the peer's copy is retired.
 	if err := a.node.SetPartition("tenant-1"); err != nil {
 		t.Fatal(err)
 	}
@@ -493,7 +497,7 @@ func TestSubscribeReplayThenLiveNoDuplicates(t *testing.T) {
 	}
 }
 
-// ---------- Blocker 6/7: read contract + caps + TTL ----------
+// ---------- Read contract, caps and TTL ----------
 
 func TestGetHidesTombstonesAndClones(t *testing.T) {
 	net := newMemNet()

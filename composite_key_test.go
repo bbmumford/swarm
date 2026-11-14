@@ -16,17 +16,17 @@ import (
 	pb "github.com/bbmumford/swarm/proto/pb"
 )
 
-// ---------- Blocker 7: composite record keys ----------
+// ---------- Composite record keys ----------
 //
-// Phase-0.5 release blocker 7 of the loom plan: "Composite record keys are
-// required for multiple latency observations/content holdings per node."
-// Pre-hardening the store was keyed by (topic, nodeID) alone and each node
-// slot held at most one record, so a node could publish exactly one fact per
-// topic. These tests pin the four properties that make the composite key
+// A record's slot is (topic, NodeID, Key), so one node holds many records on
+// a topic, one per Key, such as a latency observation per peer or a record
+// per content holding, and a keyless record keeps the slot its NodeID alone
+// names. These tests pin the four properties that make the composite key
 // safe rather than merely present.
 
 // legacySignableBytes is an INDEPENDENT re-implementation of the canonical
-// signing encoding as it stood BEFORE Record.Key existed. It exists so
+// signing encoding of a record with no Key, the bytes a keyless record is
+// signed over and that a keyed record's bytes extend. It exists so
 // TestKeylessRecordSignableBytesUnchanged compares signableBytes against a
 // separately-written oracle rather than against itself — comparing the
 // implementation to its own output would pass no matter what the encoding
@@ -120,7 +120,7 @@ func TestKeylessRecordSignableBytesUnchanged(t *testing.T) {
 	}
 }
 
-// A keyed record's canonical bytes must EXTEND the legacy encoding rather
+// A keyed record's canonical bytes must EXTEND the keyless encoding rather
 // than reshape it: same prefix, plus a length-prefixed key suffix. That is
 // what makes the suffix unambiguous, and therefore what makes (c) hold.
 func TestKeyedRecordExtendsLegacyEncoding(t *testing.T) {
@@ -561,18 +561,19 @@ func TestOutOfOrderKeyArrivingDuringReplayIsDelivered(t *testing.T) {
 	}
 }
 
-// ---------- Blocker 6 (race half): replay/live must be serial + monotonic ----------
+// ---------- Replay then live: serial and monotonic ----------
 //
 // subGate's doc says it "serialises a subscriber's replay-then-live
-// transition". It did not: finishReplay cleared `replaying` and dropped the
-// lock BEFORE flushing, so a concurrent deliver() saw replaying==false and
-// called the subscriber directly, alongside and ahead of the queued records.
+// transition": finishReplay keeps `replaying` set until it has drained the
+// queue under the lock, so a concurrent deliver() queues its record rather
+// than calling the subscriber beside the drain or ahead of the queued records.
 //
-// 🛑 `-race` is CLEAN on this and always was — the queue handoff is properly
-// locked, so nothing races in this package's memory. The violated thing is
-// the contract the gate advertises, and the damage lands in the subscriber's
+// 🛑 `-race` cannot see a breach of this — the queue handoff is properly
+// locked, so nothing races in this package's memory. What breaks is the
+// contract the gate advertises, and the damage lands in the subscriber's
 // state. A green `-race` says something about memory, never about
 // serialisation a caller was promised.
+
 // queuedHLCMax separates records queued during replay (HLC <= this) from the
 // live ones published concurrently with the drain (HLC >= 100).
 const queuedHLCMax = 20
@@ -687,8 +688,8 @@ func TestOversizeKeyRejected(t *testing.T) {
 // store. The mixed-version failure mode is therefore FAIL-CLOSED (a keyed
 // record is invisible to an old reader) rather than silently corrupting.
 //
-// legacySignableBytes is the independently-written pre-Key encoder — it is
-// exactly what an old reader computes.
+// legacySignableBytes is the independently written keyless encoder — it is
+// exactly what a reader that does not know Key computes.
 func TestOldReaderRejectsKeyedRecordRatherThanMisfilingIt(t *testing.T) {
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -889,17 +890,16 @@ func TestGraftServesTheKeyedSlotItAskedFor(t *testing.T) {
 	}
 }
 
-// ---------- Blocker 6, the OTHER half: the SUBSCRIBER MAP ----------
+// ---------- The SUBSCRIBER MAP under concurrent subscribe and delivery ----------
 //
-// §0.5.2 blocker 6 requires "subscriber maps AND replay/live ordering must be
-// race-free". #M-484 closed the ordering half; this is the map half, and it
-// was still open.
-//
-// deliverToSubs took RLock, copied `n.subs[topic]` — a map HEADER, i.e. a
-// pointer — released the lock, then ranged over it. Subscribe and the
-// unsubscribe closure both write that same inner map under the lock, so a
-// subscribe concurrent with a delivery is a concurrent map read/write, which
-// Go may answer with an outright panic rather than a torn read.
+// Subscriber maps and replay/live ordering must both be race-free: the test
+// above holds the ordering, this one the map. Subscribe and the unsubscribe
+// closure both write the topic's inner map under subsMu, and deliverToSubs
+// copies the topic's callbacks into a slice under the same lock before calling
+// them, never ranging over the map itself (a map HEADER, i.e. a pointer) once
+// the lock is released: a subscribe concurrent with a delivery would otherwise
+// be a concurrent map read/write, which Go may answer with an outright panic
+// rather than a torn read.
 func TestSubscriberMapRaceFreeUnderConcurrentSubscribeAndDeliver(t *testing.T) {
 	net := newMemNet()
 	a := startNode(t, net, Config{})
