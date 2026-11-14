@@ -16,18 +16,18 @@ option go_package = "github.com/bbmumford/swarm/proto/pb";
 // "fleet.peer" or "agent.peer.<partition>.<networkID>".
 message PeerRecord {
   // ---------- Identity ----------
-  bytes  node_id = 1;          // Ed25519 pubkey
-  uint64 epoch = 2;            // republish counter; monotonic per node_id
-  int64  issued_at = 3;        // unix nanoseconds
-  int64  expires_at = 4;       // unix nanoseconds (0 = no expiry)
+  bytes  nodeId = 1;           // Ed25519 pubkey
+  uint64 epoch = 2;            // republish counter; monotonic per nodeId
+  int64  issuedAt = 3;         // unix nanoseconds
+  int64  expiresAt = 4;        // unix nanoseconds (0 = no expiry)
 
   // ---------- Addresses ----------
   repeated Address addresses = 5;
 
   // ---------- RPC handlers + grade ----------
-  repeated string rpc_handlers = 6;  // fully-qualified names this peer serves
+  repeated string rpcHandlers = 6;   // fully-qualified names this peer serves
   Grade           grade = 7;          // QoS class (preferred for dispatch)
-  Grade           max_grade = 8;      // capability ceiling
+  Grade           maxGrade = 8;       // capability ceiling
 
   // ---------- Capabilities ----------
   Capabilities capabilities = 9;
@@ -53,8 +53,8 @@ message Address {
   string    host = 2;   // IP or hostname
   uint32    port = 3;
   string    sni = 4;    // optional TLS SNI hint
-  uint32    rtt_estimate_ms = 5; // observed RTT for adaptive selection
-  uint32    region_hint = 6;     // fly region or geo code (advisory)
+  uint32    rttEstimateMs = 5;   // observed RTT for adaptive selection
+  uint32    regionHint = 6;      // fly region or geo code (advisory)
   // scope advertises the network reachability class. Lets dial-side
   // logic distinguish a public IP/DNS name from a same-fabric private
   // address (e.g. Fly 6PN ULA fdaa:<org>:<net>:…) without having to
@@ -79,16 +79,16 @@ message Capabilities {
   repeated string roles = 1;                 // anchor, relay, edge, dhcp, print, ddns, egress
   repeated string tags = 2;                  // arbitrary k=v style tag strings ("env=prod")
 
-  QuarantineState quarantine_status = 3;     // active/cleared/none
-  string         inspection_mode = 4;        // "off" | "lite" | "full"
-  repeated string effective_tags = 5;        // tag expression results after policy compilation
-  repeated SegmentSpec segment_affinity = 6; // VRF/VLAN assignments for edge-role peers
-  repeated UserSession active_users = 7;     // who's logged in (multi-session)
-  repeated string edge_roles = 8;            // telemetry-aggregator, otel-exporter, c2-cache, signaling-relay, snmp-discoverer, tuf-cache
-  uint32         schema_version = 9;         // for skew detection during rolling upgrades
-  uint64         policy_epoch = 10;          // for anti-rollback consensus
-  uint64         c2_last_sync_age_ms = 11;   // freshness signal for c2-cache role
-  string         dhcp_server_addr = 12;      // when edge serves DHCP, advertise address
+  QuarantineState quarantineStatus = 3;      // active/cleared/none
+  string         inspectionMode = 4;         // "off" | "lite" | "full"
+  repeated string effectiveTags = 5;         // tag expression results after policy compilation
+  repeated SegmentSpec segmentAffinity = 6;  // VRF/VLAN assignments for edge-role peers
+  repeated UserSession activeUsers = 7;      // who's logged in (multi-session)
+  repeated string edgeRoles = 8;             // telemetry-aggregator, otel-exporter, c2-cache, signaling-relay, snmp-discoverer, tuf-cache
+  uint32         schemaVersion = 9;          // for skew detection during rolling upgrades
+  uint64         policyEpoch = 10;           // for anti-rollback consensus
+  uint64         c2LastSyncAgeMs = 11;       // freshness signal for c2-cache role
+  string         dhcpServerAddr = 12;        // when edge serves DHCP, advertise address
 
   // Free-form k=v capability bag for forward extension. Subject to the
   // 16 KB Record max — keep lean.
@@ -104,25 +104,25 @@ enum QuarantineState {
 
 // SegmentSpec advertises VRF/VLAN ownership for edge-role peers.
 message SegmentSpec {
-  string vrf_name = 1;
-  uint32 vlan_id = 2;
-  string nat_pool_cidr = 3; // optional
+  string vrfName = 1;
+  uint32 vlanId = 2;
+  string natPoolCidr = 3;   // optional
   bool   primary = 4;       // primary owner vs secondary
 }
 
 // UserSession advertises an active OS-user session on this peer (for multi-
 // session VDI awareness). Includes only non-PII identifiers.
 message UserSession {
-  string session_id = 1; // OS session ID
-  string user_hash = 2;  // SHA256(user@domain) for cross-peer correlation without PII
+  string sessionId = 1;  // OS session ID
+  string userHash = 2;   // SHA256(user@domain) for cross-peer correlation without PII
   int64  since = 3;      // unix nanoseconds
   string state = 4;      // "active" | "cached" | "none"
 }
 
 // NetworkInfo describes an agent's overlay membership in one network.
 message NetworkInfo {
-  string network_id = 1;
-  string overlay_ip = 2;     // e.g. "10.147.20.15"
+  string networkId = 1;
+  string overlayIp = 2;      // e.g. "10.147.20.15"
   uint32 mtu = 3;
   bool   primary = 4;        // is this the default network?
 }

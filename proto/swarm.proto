@@ -13,45 +13,45 @@ option go_package = "github.com/bbmumford/swarm/proto/pb";
 // at the transport layer — consumers register typed subscribers per Topic.
 //
 // HLC (hybrid logical clock) gives total order. Sig covers:
-//   topic || node_id || hlc || body || tombstone || pub_key ||
-//   observer_node_id || observed_at_unix_ms
+//   topic || nodeId || hlc || body || tombstone || pubKey ||
+//   observerNodeId || observedAtUnixMs
 //
-// node_id is an opaque identifier (caller-defined; may be a fingerprint or
-// other non-reversible encoding of pub_key). pub_key is the raw 32-byte
+// nodeId is an opaque identifier (caller-defined; may be a fingerprint or
+// other non-reversible encoding of pubKey). pubKey is the raw 32-byte
 // Ed25519 public key used to verify sig — the receiver MUST verify against
-// pub_key directly (not against any key derived from node_id). When the
-// caller cares about the node_id ↔ pub_key relationship (e.g. fingerprint
+// pubKey directly (not against any key derived from nodeId). When the
+// caller cares about the nodeId ↔ pubKey relationship (e.g. fingerprint
 // scheme), the application layer enforces it on top of sig verification.
 //
-// Observer-tombstone: when tombstone=true AND observer_node_id is non-empty,
-// the record is an attestation signed by observer_node_id (not the owner)
-// that the (topic, node_id) record's owner is dead. PubKey/Sig prove
-// observer_node_id holds the key. Consumers accumulate these attestations
+// Observer-tombstone: when tombstone=true AND observerNodeId is non-empty,
+// the record is an attestation signed by observerNodeId (not the owner)
+// that the (topic, nodeId) record's owner is dead. PubKey/Sig prove
+// observerNodeId holds the key. Consumers accumulate these attestations
 // and synthesise an effective tombstone only after K-of-N distinct
-// observer_node_id values arrive within a corroboration window — see
+// observerNodeId values arrive within a corroboration window — see
 // swarm/crdt.go applyAttestationLocked.
 message Record {
   string topic = 1;        // partition- and network-scoped topic name
-  bytes  node_id = 2;      // opaque origin identifier (application-defined)
+  bytes  nodeId = 2;       // opaque origin identifier (application-defined)
   uint64 hlc = 3;          // hybrid logical clock
   bytes  body = 4;         // opaque; topic-typed
   bool   tombstone = 5;    // body should be empty when true
   bytes  sig = 6;          // Ed25519 over signableBytes(record); see swarm/sig.go
-  bytes  pub_key = 7;      // raw 32-byte Ed25519 public key used to verify sig
+  bytes  pubKey = 7;       // raw 32-byte Ed25519 public key used to verify sig
 
-  // observer_node_id — when set, this record is an observer-signed
-  // attestation that (topic, node_id) is dead. Empty for owner-signed
+  // observerNodeId — when set, this record is an observer-signed
+  // attestation that (topic, nodeId) is dead. Empty for owner-signed
   // records.
-  bytes  observer_node_id = 8;
-  // observed_at_unix_ms — observer's wall-clock at the moment death was
+  bytes  observerNodeId = 8;
+  // observedAtUnixMs — observer's wall-clock at the moment death was
   // declared. Used by the corroboration-window gate. Zero for
   // owner-signed records.
-  int64  observed_at_unix_ms = 9;
+  int64  observedAtUnixMs = 9;
 
   // key sub-divides a node's slot on a topic: the store is keyed by
-  // (topic, node_id, key), so one node can hold many records on one topic
+  // (topic, nodeId, key), so one node can hold many records on one topic
   // (a latency observation per peer, a record per content hash). Each
-  // (topic, node_id, key) converges independently under HLC-max.
+  // (topic, nodeId, key) converges independently under HLC-max.
   //
   // Empty is the classical one-record-per-node form. key is covered by
   // sig, but it is appended to the canonical signing bytes ONLY when
@@ -69,21 +69,21 @@ message Frame {
     Graft                graft = 3;          // tree-edge promotion
     Prune                prune = 4;          // tree-edge demotion
     MerkleProbe          merkle = 5;         // anti-entropy probe
-    MerkleRange          merkle_range = 6;   // anti-entropy range reconciliation
+    MerkleRange          merkleRange = 6;    // anti-entropy range reconciliation
     Keepalive            keepalive = 7;      // empty payload, keeps tree edge alive
-    ContentFetchRequest  fetch_req = 8;      // point-to-point content pull
-    ContentFetchResponse fetch_resp = 9;     // point-to-point content reply
+    ContentFetchRequest  fetchReq = 8;       // point-to-point content pull
+    ContentFetchResponse fetchResp = 9;      // point-to-point content reply
   }
 }
 
 // ContentFetchRequest is a point-to-point pull of content addressed by
 // SHA256 hash. The receiver looks up its local ContentProvider and
 // returns the bytes (or an error) in a paired ContentFetchResponse.
-// The request_id is opaque correlation owned by the originator; the
+// The requestId is opaque correlation owned by the originator; the
 // receiver echoes it on the response so the originator can route the
 // reply back to the waiting Fetch call.
 message ContentFetchRequest {
-  uint64 request_id = 1;
+  uint64 requestId = 1;
   bytes  hash = 2;         // SHA256 of requested content (32 bytes)
 }
 
@@ -92,7 +92,7 @@ message ContentFetchRequest {
 // the request (not held, provider unavailable, etc.) and body is empty
 // in that case.
 message ContentFetchResponse {
-  uint64 request_id = 1;
+  uint64 requestId = 1;
   bytes  body = 2;         // empty when error is set
   string error = 3;        // empty on success
 }
@@ -107,9 +107,9 @@ message EagerPush {
 // then issue a Graft to pull the full Record.
 message IHave {
   string topic = 1;
-  bytes  node_id = 2;
+  bytes  nodeId = 2;
   uint64 hlc = 3;
-  bytes  body_hash = 4; // SHA256(body)
+  bytes  bodyHash = 4;  // SHA256(body)
   // key identifies WHICH of the origin's slots on this topic is being
   // announced (see Record.key). Empty is the classical single slot.
   // Without it a lazy-push announcement for one of a node's keyed records
@@ -122,7 +122,7 @@ message IHave {
 // Graft promotes the sender to a tree edge from the receiver's perspective.
 message Graft {
   string topic = 1;
-  bytes  node_id = 2; // the Record's origin we want to pull
+  bytes  nodeId = 2;  // the Record's origin we want to pull
   uint64 hlc = 3;
   // key identifies WHICH of the origin's slots we want (see Record.key).
   // Empty is the classical single slot.
@@ -137,9 +137,9 @@ message Prune {
 // MerkleProbe sends the local Merkle root for a topic + range.
 message MerkleProbe {
   string topic = 1;
-  bytes  range_start = 2; // first node_id in range
-  bytes  range_end = 3;   // last node_id in range
-  bytes  root_hash = 4;   // local Merkle root for this range
+  bytes  rangeStart = 2; // first nodeId in range
+  bytes  rangeEnd = 3;   // last nodeId in range
+  bytes  rootHash = 4;    // local Merkle root for this range
 }
 
 // MerkleRange is the response: send all Records in a range (or a sub-range

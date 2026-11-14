@@ -37,7 +37,7 @@ type contentTopicImpl struct {
 	provider ContentProvider
 
 	mu        sync.RWMutex
-	holders   map[[32]byte]map[NodeID]int64 // hash -> nodeID -> expires_at unix ns
+	holders   map[[32]byte]map[NodeID]int64 // hash -> nodeID -> expiresAt unix ns
 	advertTTL time.Duration
 
 	subOnce sync.Once
@@ -314,7 +314,7 @@ func (c *contentTopicImpl) handleFetchRequest(from NodeID, req *pb.ContentFetchR
 }
 
 // handleFetchResponse routes an incoming response to the waiting Fetch
-// goroutine via the pending channel keyed by request_id. Stale or
+// goroutine via the pending channel keyed by requestId. Stale or
 // unknown responses are silently dropped.
 func (c *contentTopicImpl) handleFetchResponse(_ NodeID, resp *pb.ContentFetchResponse) {
 	c.pendingMu.Lock()
@@ -368,7 +368,7 @@ func (c *contentTopicImpl) FetchBlob(ctx context.Context, manifestHash [32]byte,
 		return errors.New("swarm: manifest signature verification failed")
 	}
 	if len(manifest.BlobHash) != 32 {
-		return errors.New("swarm: manifest blob_hash length invalid")
+		return errors.New("swarm: manifest blobHash length invalid")
 	}
 
 	hasher := sha256.New()
