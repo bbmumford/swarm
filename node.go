@@ -417,11 +417,14 @@ func (n *nodeImpl) PublishKeyedTombstone(topic Topic, key string) error {
 // effective tombstone after K-of-N distinct ObserverNodeIDs report
 // within the corroboration window — see recordStore.applyAttestationLocked.
 //
-// Callers should restrict invocation to peers with the anchor role
-// (loom node's ConnectionManager.shouldEmitObserverTombstone does so
-// before emitPeerTombstone calls this) and pair this call with the
-// corresponding LAD EvictPeer so the LAD directory converges in
-// lock-step.
+// Callers should restrict invocation to peers with the anchor role and
+// see that the LAD directory drops the target as well, so it converges
+// in lock-step. loom node has two. ConnectionManager.emitPeerTombstone,
+// which the zombie-session sweep calls once shouldEmitObserverTombstone
+// has checked the role, pairs this call with the directory's EvictPeer.
+// The callback InitSwarm registers on the directory's liveness sweep
+// (SetOnLivenessEvict) checks SelfRole itself and runs for a node that
+// sweep has already dropped.
 func (n *nodeImpl) PublishObserverTombstone(topic Topic, target NodeID) error {
 	if n.stopped.Load() {
 		return ErrStopped
@@ -449,9 +452,10 @@ func (n *nodeImpl) PublishObserverTombstone(topic Topic, target NodeID) error {
 	// quorum here — this node's attestation is ONE WITNESS, NOT A VERDICT.
 	// Delivering it unconditionally would make the emitter K=1 while every peer
 	// receiving it via plumtrees correctly waits for K distinct observers,
-	// breaking the property stated on Config: "a single rogue anchor cannot
-	// evict a live peer". (The owner path, PublishTombstone, stays K=1 by
-	// design: a node signing its own death needs no corroboration.)
+	// breaking the property stated on DefaultObserverQuorum: "a single rogue
+	// anchor cannot evict a live peer". (The owner path, PublishTombstone,
+	// stays K=1 by design: a node signing its own death needs no
+	// corroboration.)
 	if applied, _ := n.store.Apply(r); applied {
 		n.recordAccepted(r)
 	}
@@ -531,10 +535,10 @@ func (n *nodeImpl) SetPartition(partitionID string) error {
 		// Apply locally, then Broadcast — NOT Publish. Publish gates the
 		// send on its own store.Apply returning applied=true; with the
 		// tombstone pre-applied here, that second Apply is a no-op
-		// (identical HLC + deterministic Ed25519 sig), so Publish
-		// returned before pushing and the partition-rebind tombstone NEVER
-		// reached the wire. Broadcast is the same fix the observer
-		// attestation path required, for the same double-apply reason.
+		// (identical HLC + deterministic Ed25519 sig), so Publish would
+		// return before pushing and the partition-rebind tombstone would
+		// NEVER reach the wire. PublishObserverTombstone broadcasts for
+		// the same reason: its record must be sent whatever Apply answers.
 		if applied, _ := n.store.Apply(tomb); applied {
 			n.recordAccepted(tomb)
 		}
@@ -672,13 +676,13 @@ func (n *nodeImpl) runTickLoop(ctx context.Context) {
 			if n.plum != nil {
 				n.plum.Tick(t)
 			}
-			// Drive Merkle anti-entropy from the production ticker too.
-			// Previously only the simulator's Node.Tick called
-			// merkle.Tick — in production the periodic drift-recovery
-			// loop NEVER ran; reconciliation happened only on session
-			// join. merkleEngine.Tick self-paces per topic via
-			// MerkleProbeInterval, so a 50ms driver costs nothing
-			// between due probes.
+			// Drive Merkle anti-entropy from this ticker. Node.Tick,
+			// which the deterministic simulator drives, and this loop
+			// are merkleEngine.Tick's two callers, so without the call
+			// here a node running on its background ticker would send
+			// no periodic drift-recovery probe. merkleEngine.Tick
+			// self-paces per topic via MerkleProbeInterval, so a 50ms
+			// driver costs nothing between due probes.
 			if n.merkle != nil {
 				n.merkle.Tick()
 			}

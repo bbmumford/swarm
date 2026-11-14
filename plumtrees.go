@@ -157,8 +157,11 @@ func (e *plumtreesEngine) Publish(r Record) {
 // attestation: Apply returns applied=false for every attestation below quorum,
 // yet that attestation is exactly what must reach OTHER observers so they can
 // count it toward THEIR quorum. Routed through Publish, the first attestation of
-// any target — the only kind a lone anchor can produce — was applied locally and
-// never sent, so no target ever accumulated K distinct observers on any node.
+// any target — the only kind a lone anchor can produce — would be applied
+// locally and never sent, so no target would accumulate K distinct observers on
+// any node. Its callers are nodeImpl.PublishObserverTombstone and
+// nodeImpl.SetPartition, which broadcasts the rebind tombstones it has already
+// applied itself.
 //
 // The caller owns the decision that r is novel and worth propagating. Use this
 // only for records where local-apply status must not gate the broadcast.

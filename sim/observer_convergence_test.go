@@ -13,27 +13,25 @@ import (
 // K distinct observers, on separate machines, converge to a synthesised
 // tombstone the whole mesh applies.
 //
-// This is the property the fleet needs and never had. Observer attestations
-// are how a node that died abruptly — every machine replaced by a deploy — gets
-// forgotten: it cannot tombstone itself, so K anchors witness its silence and
-// attest, and the K-of-N quorum turns those witnesses into a propagating death.
+// Observer attestations are how a node that died abruptly, such as a machine
+// replaced by a deploy, is forgotten: it cannot tombstone itself, so K anchors
+// witness its silence and attest, and the K-of-N quorum turns those witnesses
+// into a propagating death.
 //
-// The bug this guards against: PublishObserverTombstone broadcast the
-// attestation through plumtrees.Publish, which applies the record locally first
-// and returns WITHOUT sending when store.Apply reports applied=false. An
-// observer attestation is applied=false until it crosses quorum — so the very
-// first attestation of any target, the only kind a single anchor can produce,
-// was never put on the wire. Each anchor accumulated its own attestations in
-// isolation and no target ever reached K distinct observers on any node.
-// Measured on the live fleet: two anchors emitting 96 and 12 attestations, zero
-// tombstones formed, the ghost roster frozen at 40 against 11 real machines.
+// What it holds PublishObserverTombstone to: the attestation goes on the wire
+// whatever the emitter's own store answers (plumtreesEngine.Broadcast, not
+// Publish). Publish applies the record locally first and returns WITHOUT
+// sending when store.Apply reports applied=false, and an observer attestation
+// is applied=false until it crosses quorum. Through Publish the first
+// attestation of any target, the only kind a single anchor can produce, would
+// never be put on the wire: each anchor would accumulate its own attestations
+// in isolation and no target would reach K distinct observers on any node.
 //
-// The fix: an attestation is a novel signed record the emitter has already
-// decided is worth propagating; it must broadcast regardless of local quorum,
-// because its whole purpose is to reach OTHER observers' stores so THEY can
-// count it. The receive path already handles quorum correctly — when the
-// K-th distinct attestation lands, Apply returns applied=true and the synth
-// tombstone is delivered.
+// An attestation is a novel signed record the emitter has already decided is
+// worth propagating; it must broadcast regardless of local quorum, because
+// its whole purpose is to reach OTHER observers' stores so THEY can count it.
+// The receive path counts the quorum: when the K-th distinct attestation
+// lands, Apply returns applied=true and the synth tombstone is delivered.
 func TestObserverAttestationConvergesToTombstone(t *testing.T) {
 	const topic = "fleet.peer"
 	const ghost = swarm.NodeID("vl1_ghost_target")
@@ -107,7 +105,8 @@ func TestObserverAttestationConvergesToTombstone(t *testing.T) {
 // TestSingleObserverDoesNotTombstone guards the safety half: ONE observer must
 // never be enough. If a lone attestation synthesised a tombstone, a single
 // anchor could evict any live peer — the exact cascade the quorum exists to
-// prevent, and the property this package's Config doc states outright.
+// prevent, and the property the doc on swarm.DefaultObserverQuorum states
+// outright.
 func TestSingleObserverDoesNotTombstone(t *testing.T) {
 	const topic = "fleet.peer"
 	const target = swarm.NodeID("vl1_live_peer")
