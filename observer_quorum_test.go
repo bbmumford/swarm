@@ -45,27 +45,29 @@ func mustNode(t *testing.T, id NodeID) Node {
 }
 
 // TestPublishObserverTombstone_EmitterDoesNotBypassQuorum guards the security
-// property this package's own Config doc states outright:
+// property the doc on DefaultObserverQuorum states outright:
 //
 //	"DefaultObserverQuorum K must be >= 2 (anything less is no quorum at all);
 //	 production values are tuned so a single rogue anchor cannot evict a live
 //	 peer"
 //
-// THE BUG: every REMOTE node receives an attestation through plumtrees, which
-// routes it via store.Apply — and Apply returns applied=true only once K
-// distinct observers corroborate (crdt.go applyObserverAttestation). But the
-// EMITTER called deliverToSubs directly, with no store.Apply, so its own
-// subscribers fired on its OWN single attestation. K=1 on the emitter, K=2
-// everywhere else.
+// Every REMOTE node receives an attestation through plumtrees, which routes
+// it via store.Apply, and Apply returns applied=true only once K distinct
+// observers corroborate (recordStore.applyAttestationLocked). The EMITTER
+// holds to the same count: PublishObserverTombstone hands its own attestation
+// to store.Apply and fans it out to its subscribers (recordAccepted) only on
+// applied=true. Fanning it out unconditionally would make the quorum K=1 on
+// the emitter and K everywhere else.
 //
-// That asymmetry is not academic. loom's node bridges this topic straight
-// into the LAD directory (node/lad_reach_bridge.go), branching on bare
-// r.Tombstone — so on the emitting anchor a single un-corroborated attestation
-// evicted a peer's Reach + Member records locally. It was masked only because
-// the sole caller (sweepZombieSessions) already evicted that peer by design.
-// The moment any other path attests — e.g. the directory's 16-minute liveness
-// sweep — the mask comes off and one anchor can evict a live peer on its own
-// say-so. That is precisely the cascade the quorum exists to prevent.
+// That asymmetry would reach past this package. loom's node bridges this
+// topic straight into the LAD directory (node/lad_reach_bridge.go), branching
+// on bare r.Tombstone and writing propagating tombstones over the target's
+// Reach, Member and Role records. One of loom's two callers, the callback
+// InitSwarm registers on the directory's liveness sweep, attests on this
+// node's view alone, a verdict that sweep itself keeps local. One anchor's
+// un-corroborated attestation would then evict a live peer on every consumer
+// of that directory on its own say-so, the cascade the quorum exists to
+// prevent.
 //
 // A node's own attestation must COUNT TOWARD quorum, never BYPASS it.
 func TestPublishObserverTombstone_EmitterDoesNotBypassQuorum(t *testing.T) {
@@ -122,10 +124,12 @@ func TestPublishObserverTombstone_SelfAndEmptyTargetRefused(t *testing.T) {
 	}
 }
 
-// TestIsObserverAttestation_Discriminates guards the discriminator the LAD
-// bridge needs to tell an observer attestation from an owner-signed tombstone.
-// The bridge currently branches on bare r.Tombstone, which cannot distinguish
-// them — that is why the K=1 path reached the directory at all.
+// TestIsObserverAttestation_Discriminates guards the discriminator that tells
+// an observer attestation from an owner-signed tombstone. The store's Apply,
+// plumtrees and the inbound gate read it here, and loom node's swarm
+// subscribers read it too. loom's LAD bridge branches on bare r.Tombstone,
+// which cannot tell the two apart, so the store's quorum is all that keeps a
+// single attestation from reaching the directory as a tombstone.
 func TestIsObserverAttestation_Discriminates(t *testing.T) {
 	owner := Record{Topic: "t", NodeID: "n", Tombstone: true}
 	if owner.IsObserverAttestation() {
