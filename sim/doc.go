@@ -1,5 +1,5 @@
-// Copyright (c) 2026 HSTLES / ORBTR Pty Ltd. All Rights Reserved.
-// Queries: licensing@hstles.com
+// Copyright (c) 2026 Brandon Miller-Mumford.
+// Licensed under the MIT License; see LICENSE.
 
 // Package sim provides a deterministic network simulator for the swarm
 // engine. It is the test bed for the swarm core, role/partition/pause hooks,

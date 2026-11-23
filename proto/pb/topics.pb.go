@@ -1,5 +1,5 @@
-// Copyright (c) 2026 HSTLES / ORBTR Pty Ltd. All Rights Reserved.
-// Queries: licensing@hstles.com
+// Copyright (c) 2026 Brandon Miller-Mumford.
+// Licensed under the MIT License; see LICENSE.
 //
 // Typed record bodies for distributed-state swarm topics. Each message
 // is carried in the body of a swarm.Record on its named topic.
