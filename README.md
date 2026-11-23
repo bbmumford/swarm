@@ -1,21 +1,121 @@
 # swarm
 
-Plumtrees-based propagation engine with δ-CRDT storage and Merkle anti-entropy.
-Propagation substrate for the HSTLES fleet mesh and the ORBTR agent mesh.
+swarm spreads small signed records across a mesh of nodes and keeps every
+node's copy converging. A node publishes a record on a topic; swarm pushes it
+along a spanning tree of peers (Plumtrees: eager push on tree edges, lazy
+`IHAVE` announcements elsewhere, `GRAFT` and `PRUNE` to repair the tree), stores
+it in a per-topic delta-state CRDT, and runs Merkle anti-entropy so that nodes
+which missed a message catch up.
 
-## Capabilities
+swarm does not open connections. The caller supplies a `Transport` (send to a
+peer, broadcast, the current peers, and callbacks for received messages and for
+peers joining and leaving) and joins it to a node with `Wire`.
 
-- **Plumtrees epidemic broadcast** — tree-based eager push + lazy IHAVE announcements + GRAFT/PRUNE for partial-tree healing
-- **δ-CRDT records** — per-topic delta-state CRDT with deterministic merge
-- **Merkle anti-entropy** — periodic root comparison + range reconciliation for drift recovery
-- **PerPeerConfig** — per-peer adaptive interval, backpressure, RTT, bandwidth-cap state owned by swarm
-- **Role-aware tree-edge selection** — anchor-role peers preferred for tree edges
-- **Tenant-scoped topics** — per-tenant + per-network subscriber filtering
-- **Pause/Resume** — resource-governor integration; pause non-correctness-critical work under host pressure
-- **ContentTopic** — content-addressed pull (single-blob + chunked file transfer) for signed+hash-addressed artifact distribution
+What a node stores and how copies converge:
 
-## Topics
+- **Records.** A `Record` carries its topic, the publishing NodeID, an optional
+  `Key`, a hybrid logical clock stamp, a body (16 KB at most by default), a
+  tombstone flag, the publisher's Ed25519 public key and its signature over a
+  fixed byte layout of all of those. Each topic holds one slot per
+  (NodeID, Key); a node that never sets `Key` holds one slot per topic.
+- **Merge.** A slot keeps the record with the highest clock stamp, ties broken
+  by the signature bytes, so any two stores merge to the same result in either
+  order. Tombstones override live records.
+- **Observer tombstones.** Other nodes can attest that a node has gone silent.
+  When enough distinct observers attest within a window
+  (`SetObserverQuorum`), each store tombstones every slot that node holds on the
+  topic. `SetObserverRoleCheck` decides which observers count.
+- **Inbound checks.** Every inbound record's signature is verified against the
+  key it carries. `RequireNodeKeyBinding` also refuses records whose NodeID is
+  not the hex encoding of that key, the scheme swarm uses when `Config.NodeID`
+  is left empty. Meshes with other NodeID schemes bind keys to NodeIDs in
+  `TrustCheck`, which runs on every verified record before it can change the
+  store; with neither set, any key may write any NodeID's slot. Stamps more than
+  `MaxClockSkew` (default 10 minutes) ahead of the local clock are refused, and
+  the store refuses new topics, slots and per-node keys past `MaxTopics`,
+  `MaxRecordsPerTopic` and `MaxKeysPerNodePerTopic` rather than evicting.
+- **Per-peer pacing.** `PerPeerConfig` gives each peer its own adaptive
+  interval, backpressure limit, bandwidth cap and priority class.
+- **Roles, partitions and pausing.** `SetRole` changes the node's role and
+  rebalances its tree edges (anchor peers are preferred as edges),
+  `SetPartition` tombstones the node's records and republishes them under a new
+  partition, and `Pause`/`Resume` stop and restart non-essential work under
+  host pressure.
+- **Content.** `ContentTopic` announces and fetches content-addressed blobs,
+  whole or in chunks, behind a signed manifest (`BuildSignedManifest`,
+  `ChunkBlob`).
 
-Topics are tenant- and network-scoped strings. The unified PeerRecord lives on `fleet.peer` (fleet) or `agent.peer.<tenantID>.<networkID>` (agent).
+## Use
 
+```sh
+go get github.com/bbmumford/swarm
+```
 
+```go
+n, err := swarm.New(swarm.Config{NodeID: id, PrivKey: priv, TreeDegree: 4})
+if err != nil {
+	return err
+}
+if err := swarm.Wire(n, transport); err != nil { // transport implements swarm.Transport
+	return err
+}
+go n.Start(ctx)
+
+unsub, _ := n.Subscribe("fleet.peer", func(r swarm.Record) error {
+	// r is verified and has won its slot's merge
+	return nil
+})
+defer unsub()
+
+_ = n.Publish("fleet.peer", body)
+rec, ok := n.Get("fleet.peer", someNode)
+```
+
+`TopicRecords`, `NodeRecords` and `GetKeyed` read the store; `PublishKeyed`,
+`PublishTombstone`, `PublishKeyedTombstone` and `PublishObserverTombstone`
+write it. `HLC` is the hybrid logical clock the records use, and
+`VerifyRecord` checks a record's signature on its own. `topics.go` names the
+topics the device agents use (`AgentPolicyTopic`, `AgentHealthTopic` and the
+rest, each scoped by partition).
+
+| package | what it holds |
+|---|---|
+| `swarm` | `Node`, `New`, `Wire`, `Config`, `Record`, `Topic`, `Transport`, `HLC`, `ContentTopic` |
+| `swarm/proto/pb` | the protobuf messages generated from `proto/*.proto`: peer records, content adverts and fetches, and the device agents' topic payloads |
+| `swarm/sim` | a deterministic network simulator that drives nodes on virtual time (`Config.NowFn`, `DisableBackgroundTicker`, `Node.Tick`), used by the tests |
+
+## Dependencies
+
+- No other package of this estate.
+- `google.golang.org/protobuf`, for `proto/pb`.
+
+## Used by
+
+Importers in the ORBTR estate:
+
+- `github.com/bbmumford/loom/node` and `github.com/bbmumford/loom/directory`:
+  loom builds the platform mesh's swarm node over an aether transport.
+- `github.com/ORBTR/agent/internal/core/wire` and
+  `github.com/ORBTR/agent/internal/core/edge`: the device agent's mesh.
+- `github.com/ORBTR/constellation/domain/storage/storage/meshxport` and
+  `github.com/ORBTR/constellation/domain/identity/trust/partitionkeys`
+  (`proto/pb` only).
+- `github.com/ORBTR/node.orbtr.io`.
+- `github.com/ORBTR/orb/internal/mesh`, `internal/control`, `internal/dispatch`,
+  `internal/trust` and `cmd/orb-satellite`: the local inference cluster's state.
+
+## Platforms and build
+
+Pure Go, no cgo and no build tags. The module's `go` directive is 1.25.0.
+
+## Licence
+
+MIT. Copyright (c) 2026 Brandon Miller-Mumford. The full text is in
+[LICENSE](LICENSE).
+
+## Contributing
+
+[AGENTS.md](AGENTS.md) holds the repository's two rules, for people and coding
+agents alike: no temporary documents in the repository, and conventional commit
+messages that stand on their own. [CLAUDE.md](CLAUDE.md) imports it for Claude
+Code.
