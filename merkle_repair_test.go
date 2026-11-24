@@ -32,7 +32,7 @@ func chainOfTreeEdges(t *testing.T) (a, b, c *testNode) {
 	net.link(ids[1], ids[2])
 
 	mk := func(priv ed25519.PrivateKey) *testNode {
-		n, err := New(Config{PrivKey: priv, DisableBackgroundTicker: true})
+		n, err := New(Config{PrivKey: priv, DisableBackgroundTicker: true, TrustCheck: acceptAllRecords})
 		if err != nil {
 			t.Fatal(err)
 		}

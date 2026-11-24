@@ -13,6 +13,11 @@ var (
 	// ErrInvalidConfig is returned by New() if Config is structurally invalid.
 	ErrInvalidConfig = errors.New("swarm: invalid config")
 
+	// ErrNoTrustCheck is returned by New for a Config whose TrustCheck is
+	// nil: a node without one would store every proved node's records on
+	// every topic.
+	ErrNoTrustCheck = errors.New("swarm: Config.TrustCheck is required")
+
 	// ErrNoHolders is returned by ContentTopic.Fetch when no peer claims
 	// to hold the requested hash and broadcast lookup also returns empty.
 	ErrNoHolders = errors.New("swarm: no holders for content hash")

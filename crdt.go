@@ -55,8 +55,8 @@ type recordStore struct {
 	observerQuorum              int
 	observerCorroborationWindow time.Duration
 
-	// observerRoleCheck — when non-nil, rejects observer attestations
-	// for which this returns false. Receives the claimed ObserverNodeID
+	// observerRoleCheck admits an observer attestation only when it
+	// returns true, and nil admits none. Receives the claimed ObserverNodeID
 	// and the Sig-verified PubKey so the gate can bind PubKey to a
 	// known-anchor pubkey (without that bind a Sybil attacker can claim
 	// any NodeID and supply their own keypair), and the attestation's
@@ -64,9 +64,9 @@ type recordStore struct {
 	// about itself. SetObserverRoleCheck sets it: loom node's InitSwarm
 	// wires observerCheck, which asks its anchor-endorsement policy over
 	// the fleet.peer records its RoleTable holds, and orb's mesh fabric
-	// wires observerGate, which binds the observer id to hex(PubKey) and
-	// refuses an observer reporting itself. nil accepts every observer,
-	// which only tests leave.
+	// wires observerGate, which refuses an observer reporting itself. The
+	// inbound gate has already bound the observer id to PubKey. A test that
+	// counts every observer passes swarmtest.AcceptAllObservers.
 	observerRoleCheck func(observer NodeID, pubKey []byte, subject NodeID) bool
 
 	// nowFn — wall clock for attestation-window pruning. Defaults to
@@ -216,9 +216,10 @@ func (s *recordStore) setCaps(maxTopics, maxRecordsPerTopic, maxKeysPerNode, max
 // the Sig-verified PubKey and the attestation's subject (its NodeID); it
 // MUST verify the (NodeID, PubKey) binding against application-layer
 // trust state to prevent Sybil: loom node's InitSwarm wires one over the
-// fleet.peer records its RoleTable holds, and orb's mesh fabric one over
-// its hex(PubKey) node ids. Pass nil to disable the gate (accept all
-// observers — only appropriate for tests).
+// fleet.peer records its RoleTable holds, and orb's mesh fabric one that
+// refuses an observer reporting itself. With no gate set, or nil, no
+// attestation is admitted, so no node is evicted by attestations a store
+// cannot judge.
 func (s *recordStore) SetObserverRoleCheck(fn func(observer NodeID, pubKey []byte, subject NodeID) bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -361,8 +362,8 @@ func (s *recordStore) ApplyExt(r Record) (applied bool, replaced bool, accumulat
 }
 
 // countedLocked returns the attestations in set that count toward the
-// quorum: all of them while fewer than K are held or no gate is wired, and
-// once K are held only those whose observer the gate admits now, asked with
+// quorum: none while no gate is wired, all of them while fewer than K are
+// held, and once K are held only those whose observer the gate admits now, asked with
 // each attestation's own observer, key and subject. The gate is asked again
 // because its answer for an observer can change after that observer's
 // attestation was admitted: loom's gate admits one node per anchor key, the
@@ -375,7 +376,7 @@ func (s *recordStore) ApplyExt(r Record) (applied bool, replaced bool, accumulat
 func (s *recordStore) countedLocked(set map[NodeID]Record) []Record {
 	counted := make([]Record, 0, len(set))
 	for _, a := range set {
-		if len(set) < s.observerQuorum || s.observerRoleCheck == nil || s.observerRoleCheck(a.ObserverNodeID, a.PubKey, a.NodeID) {
+		if s.observerRoleCheck != nil && (len(set) < s.observerQuorum || s.observerRoleCheck(a.ObserverNodeID, a.PubKey, a.NodeID)) {
 			counted = append(counted, a)
 		}
 	}
@@ -386,10 +387,9 @@ func (s *recordStore) countedLocked(set map[NodeID]Record) []Record {
 // K-of-N within W is satisfied, synthesises a tombstone in the standard
 // records slot. Called under s.mu.
 func (s *recordStore) applyAttestationLocked(ts *topicStore, att Record) (applied bool, replaced bool, accumulated bool) {
-	// v1 anchor-only trust gate — reject attestations from non-anchor
-	// observers (or observers whose claimed NodeID does not bind to the
-	// Sig-verified PubKey) when the role check is wired.
-	if s.observerRoleCheck != nil && !s.observerRoleCheck(att.ObserverNodeID, att.PubKey, att.NodeID) {
+	// The role gate admits an attestation only from an observer it trusts;
+	// with no gate wired none is admitted.
+	if s.observerRoleCheck == nil || !s.observerRoleCheck(att.ObserverNodeID, att.PubKey, att.NodeID) {
 		return false, false, false
 	}
 

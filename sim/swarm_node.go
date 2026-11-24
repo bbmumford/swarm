@@ -13,6 +13,7 @@ import (
 
 	"github.com/ORBTR/aether"
 	"github.com/bbmumford/swarm"
+	"github.com/bbmumford/swarm/swarmtest"
 )
 
 // SwarmNode wraps a real swarm.Node so it satisfies sim.Node. The
@@ -62,11 +63,13 @@ func NewSwarmNode(id NodeID, peers []NodeID) *SwarmNode {
 		MerkleProbeInterval:     200 * time.Millisecond,
 		NowFn:                   sn.virtualNow,
 		DisableBackgroundTicker: true,
+		TrustCheck:              swarmtest.AcceptAll,
 	}
 	node, err := swarm.New(cfg)
 	if err != nil {
 		panic(err)
 	}
+	node.SetObserverRoleCheck(swarmtest.AcceptAllObservers)
 	if err := swarm.Wire(node, tport); err != nil {
 		panic(err)
 	}

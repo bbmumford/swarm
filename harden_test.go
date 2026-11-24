@@ -152,6 +152,9 @@ func startNode(t *testing.T, net *memNet, cfg Config) *testNode {
 		t.Fatal(err)
 	}
 	cfg.PrivKey = priv
+	if cfg.TrustCheck == nil {
+		cfg.TrustCheck = acceptAllRecords
+	}
 	if cfg.MerkleProbeInterval == 0 {
 		cfg.MerkleProbeInterval = 50 * time.Millisecond
 	}
@@ -215,7 +218,7 @@ func inject(t *testing.T, net *memNet, target *testNode, from NodeID, r Record) 
 func TestLifecycleStartStopIdempotency(t *testing.T) {
 	net := newMemNet()
 	_, priv, _ := ed25519.GenerateKey(rand.Reader)
-	n, err := New(Config{PrivKey: priv})
+	n, err := New(Config{PrivKey: priv, TrustCheck: acceptAllRecords})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -297,11 +300,12 @@ func TestAttestationRelayAcrossSparseTopology(t *testing.T) {
 	net.link(idB, idC)
 
 	mk := func(priv ed25519.PrivateKey) *testNode {
-		cfg := Config{PrivKey: priv, DisableBackgroundTicker: true}
+		cfg := Config{PrivKey: priv, DisableBackgroundTicker: true, TrustCheck: acceptAllRecords}
 		n, err := New(cfg)
 		if err != nil {
 			t.Fatal(err)
 		}
+		n.SetObserverRoleCheck(acceptAllObservers)
 		impl := n.(*nodeImpl)
 		tport := net.attach(impl.id)
 		if err := Wire(n, tport); err != nil {

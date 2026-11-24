@@ -359,6 +359,7 @@ func TestObserverQuorumTombstonesEveryKeyOfTheNode(t *testing.T) {
 	store := newRecordStore()
 	store.observerQuorum = 2
 	store.observerCorroborationWindow = time.Minute
+	store.SetObserverRoleCheck(acceptAllObservers)
 
 	_, targetPriv, _ := ed25519.GenerateKey(rand.Reader)
 	targetID := nodeIDFromPub(targetPriv.Public().(ed25519.PublicKey))
@@ -667,7 +668,7 @@ func TestOversizeKeyRejected(t *testing.T) {
 		t.Fatal("PublishKeyed accepted a key longer than MaxKeyBytes")
 	}
 
-	gate := newInboundGate(Config{})
+	gate := newInboundGate(Config{TrustCheck: acceptAllRecords})
 	r := Record{Topic: "t.a", NodeID: "n", HLC: 1, Key: string(huge)}
 	if err := gate.Admit(r); err == nil {
 		t.Fatal("inbound gate admitted a key longer than MaxKeyBytes")

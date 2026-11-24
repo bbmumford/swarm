@@ -159,7 +159,9 @@ type Config struct {
 	// reply and merkle range paths). Return a non-nil error to reject the
 	// record. It is the application's authorization of what a proved node
 	// may write: partition and topic scope, role entitlement, revocation.
-	// nil accepts every proved record.
+	// Required: New refuses a Config without one (ErrNoTrustCheck), so no
+	// node admits records by omission. A test that trusts every proved node
+	// passes swarmtest.AcceptAll.
 	TrustCheck func(Record) error
 
 	// MaxClockSkew bounds how far ahead of the local wall clock an inbound

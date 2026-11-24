@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/bbmumford/swarm"
+	"github.com/bbmumford/swarm/swarmtest"
 )
 
 // TestSetPartitionTombstonesSelfRecords verifies SetPartition tombstones every
@@ -22,6 +23,7 @@ func TestSetPartitionTombstonesSelfRecords(t *testing.T) {
 		TreeDegree:              4,
 		NowFn:                   func() time.Time { return time.UnixMilli(0) },
 		DisableBackgroundTicker: true,
+		TrustCheck:              swarmtest.AcceptAll,
 	}
 	node, err := swarm.New(cfg)
 	if err != nil {
@@ -119,6 +121,7 @@ func TestSetRoleNotifiesCallback(t *testing.T) {
 		TreeDegree:              4,
 		NowFn:                   func() time.Time { return time.UnixMilli(0) },
 		DisableBackgroundTicker: true,
+		TrustCheck:              swarmtest.AcceptAll,
 	}
 	node, err := swarm.New(cfg)
 	if err != nil {

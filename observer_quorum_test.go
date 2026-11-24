@@ -33,6 +33,7 @@ func mustNode(t *testing.T, id NodeID) Node {
 		NodeID:                  id,
 		PrivKey:                 priv,
 		DisableBackgroundTicker: true,
+		TrustCheck:              acceptAllRecords,
 	})
 	if err != nil {
 		t.Fatalf("new node %s: %v", id, err)

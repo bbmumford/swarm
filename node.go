@@ -66,6 +66,9 @@ func New(cfg Config) (Node, error) {
 	if cfg.PrivKey == nil || len(cfg.PrivKey) != ed25519.PrivateKeySize {
 		return nil, ErrInvalidConfig
 	}
+	if cfg.TrustCheck == nil {
+		return nil, ErrNoTrustCheck
+	}
 	if cfg.NodeID == "" {
 		pub, _ := cfg.PrivKey.Public().(ed25519.PublicKey)
 		cfg.NodeID = nodeIDFromPub(pub)

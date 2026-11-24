@@ -30,7 +30,8 @@ import (
 //  3. key binding     — NodeID == the aether NodeID of PubKey, always
 //     (owner records bind NodeID; attestations bind ObserverNodeID), so no
 //     key writes another node's slot or attests under another observer
-//  4. TrustCheck      — the application's injected policy hook
+//  4. TrustCheck      — the application's injected policy hook, which New
+//     requires
 //
 // Rejections are counted per reason for observability.
 type inboundGate struct {
@@ -115,11 +116,13 @@ func (g *inboundGate) Admit(r Record) error {
 		return errGateBinding
 	}
 
-	if g.trustCheck != nil {
-		if err := g.trustCheck(r); err != nil {
-			g.rejectedTrust.Add(1)
-			return fmt.Errorf("swarm: trust check rejected record: %w", err)
-		}
+	if g.trustCheck == nil {
+		g.rejectedTrust.Add(1)
+		return ErrNoTrustCheck
+	}
+	if err := g.trustCheck(r); err != nil {
+		g.rejectedTrust.Add(1)
+		return fmt.Errorf("swarm: trust check rejected record: %w", err)
 	}
 	return nil
 }
