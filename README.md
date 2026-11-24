@@ -25,12 +25,13 @@ What a node stores and how copies converge:
   When enough distinct observers attest within a window
   (`SetObserverQuorum`), each store tombstones every slot that node holds on the
   topic. `SetObserverRoleCheck` decides which observers count.
-- **Inbound checks.** Every inbound record's signature is verified against the
-  key it carries. `RequireNodeKeyBinding` also refuses records whose NodeID is
-  not the hex encoding of that key, the scheme swarm uses when `Config.NodeID`
-  is left empty. Meshes with other NodeID schemes bind keys to NodeIDs in
-  `TrustCheck`, which runs on every verified record before it can change the
-  store; with neither set, any key may write any NodeID's slot. Stamps more than
+- **Inbound checks.** A node's NodeID is the aether NodeID of its Ed25519 key.
+  Every inbound record must be signed by the key it carries, and its NodeID
+  (an observer attestation's `ObserverNodeID`) must be that key's NodeID.
+  `TrustCheck` is required (`New` returns `ErrNoTrustCheck` without it): it
+  runs on every proved record before the record can change the store, and
+  decides partition, topic and role admission. Observer attestations are
+  admitted only once `SetObserverRoleCheck` sets a gate. Stamps more than
   `MaxClockSkew` (default 10 minutes) ahead of the local clock are refused, and
   the store refuses new topics, slots and per-node keys past `MaxTopics`,
   `MaxRecordsPerTopic` and `MaxKeysPerNodePerTopic` rather than evicting.
@@ -52,7 +53,12 @@ go get github.com/bbmumford/swarm
 ```
 
 ```go
-n, err := swarm.New(swarm.Config{NodeID: id, PrivKey: priv, TreeDegree: 4})
+n, err := swarm.New(swarm.Config{
+	NodeID:     id,   // the aether NodeID of priv's public key
+	PrivKey:    priv,
+	TreeDegree: 4,
+	TrustCheck: trust, // func(swarm.Record) error: admit or refuse each proved record
+})
 if err != nil {
 	return err
 }
@@ -74,7 +80,7 @@ rec, ok := n.Get("fleet.peer", someNode)
 `TopicRecords`, `NodeRecords` and `GetKeyed` read the store; `PublishKeyed`,
 `PublishTombstone`, `PublishKeyedTombstone` and `PublishObserverTombstone`
 write it. `HLC` is the hybrid logical clock the records use, and
-`VerifyRecord` checks a record's signature on its own. `topics.go` names the
+`VerifyRecord` checks a record's signature and its NodeID binding on its own. `topics.go` names the
 topics the device agents use (`AgentPolicyTopic`, `AgentHealthTopic` and the
 rest, each scoped by partition).
 
@@ -83,10 +89,11 @@ rest, each scoped by partition).
 | `swarm` | `Node`, `New`, `Wire`, `Config`, `Record`, `Topic`, `Transport`, `HLC`, `ContentTopic` |
 | `swarm/proto/pb` | the protobuf messages generated from `proto/*.proto`: peer records, content adverts and fetches, and the device agents' topic payloads |
 | `swarm/sim` | a deterministic network simulator that drives nodes on virtual time (`Config.NowFn`, `DisableBackgroundTicker`, `Node.Tick`), used by the tests |
+| `swarm/swarmtest` | `AcceptAll` and `AcceptAllObservers`, the trust gates for tests that trust every proved node |
 
 ## Dependencies
 
-- No other package of this estate.
+- `github.com/ORBTR/aether`: `NewNodeID`, the NodeID every record binds to.
 - `google.golang.org/protobuf`, for `proto/pb`.
 
 ## Used by
