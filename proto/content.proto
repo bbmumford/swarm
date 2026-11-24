@@ -48,4 +48,5 @@ message Manifest {
   int64  publishedAt = 7;    // unix nanoseconds
   bytes  publisher = 8;      // NodeID
   bytes  sig = 9;            // Ed25519 by publisher over entire manifest
+  bytes  publisherKey = 10;  // publisher's Ed25519 public key; publisher is its NodeID
 }

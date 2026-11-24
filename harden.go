@@ -4,7 +4,6 @@
 package swarm
 
 import (
-	"crypto/ed25519"
 	"errors"
 	"fmt"
 	"sync/atomic"
@@ -28,15 +27,15 @@ import (
 //     Config.MaxClockSkew ahead of local wall-now; the CRDT winner
 //     comparison consumes the RAW remote HLC, so this is the only thing
 //     standing between one far-future stamp and a permanently-pinned slot
-//  3. key binding     — optional NodeID == hex(PubKey) enforcement
-//     (owner records bind NodeID; attestations bind ObserverNodeID)
+//  3. key binding     — NodeID == the aether NodeID of PubKey, always
+//     (owner records bind NodeID; attestations bind ObserverNodeID), so no
+//     key writes another node's slot or attests under another observer
 //  4. TrustCheck      — the application's injected policy hook
 //
 // Rejections are counted per reason for observability.
 type inboundGate struct {
 	maxBytes   int
 	maxSkew    time.Duration
-	binding    bool
 	trustCheck func(Record) error
 	nowFn      func() time.Time
 
@@ -78,7 +77,6 @@ func newInboundGate(cfg Config) *inboundGate {
 	return &inboundGate{
 		maxBytes:   cfg.MaxRecordBytes,
 		maxSkew:    maxSkew,
-		binding:    cfg.RequireNodeKeyBinding,
 		trustCheck: cfg.TrustCheck,
 		// The skew comparison MUST run in the HLC's clock domain, which is
 		// the REAL wall clock (HLC.Now stamps time.Now regardless of
@@ -110,18 +108,11 @@ func (g *inboundGate) Admit(r Record) error {
 		return errGateSkew
 	}
 
-	if g.binding {
-		// Owner records bind NodeID↔PubKey; attestations bind the OBSERVER
-		// (their PubKey signed the record; the target NodeID is the claim).
-		bindID := r.NodeID
-		if r.IsObserverAttestation() {
-			bindID = r.ObserverNodeID
-		}
-		if len(r.PubKey) != ed25519.PublicKeySize ||
-			bindID != nodeIDFromPub(ed25519.PublicKey(r.PubKey)) {
-			g.rejectedBinding.Add(1)
-			return errGateBinding
-		}
+	// Owner records bind NodeID↔PubKey; attestations bind the OBSERVER
+	// (their PubKey signed the record; the target NodeID is the claim).
+	if !recordBindsKey(r) {
+		g.rejectedBinding.Add(1)
+		return errGateBinding
 	}
 
 	if g.trustCheck != nil {

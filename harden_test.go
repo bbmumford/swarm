@@ -401,7 +401,7 @@ func TestInboundGateRejects(t *testing.T) {
 
 func TestNodeKeyBindingEnforced(t *testing.T) {
 	net := newMemNet()
-	a := startNode(t, net, Config{RequireNodeKeyBinding: true})
+	a := startNode(t, net, Config{})
 	_, attacker, _ := ed25519.GenerateKey(rand.Reader)
 	attackerID := nodeIDFromPub(attacker.Public().(ed25519.PublicKey))
 	now := uint64(time.Now().UnixMilli())

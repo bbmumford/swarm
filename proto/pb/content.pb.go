@@ -226,15 +226,16 @@ func (x *ContentLocateResponse) GetAdvert() *ContentAdvert {
 // swarm.Record on a content topic, indexed by BlobHash.
 type Manifest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	BlobHash      []byte                 `protobuf:"bytes,1,opt,name=blobHash,proto3" json:"blobHash,omitempty"`        // SHA256 of full reassembled content
-	TotalSize     uint64                 `protobuf:"varint,2,opt,name=totalSize,proto3" json:"totalSize,omitempty"`     // bytes
-	ChunkSize     uint32                 `protobuf:"varint,3,opt,name=chunkSize,proto3" json:"chunkSize,omitempty"`     // typically 1 MB (1<<20); last chunk may be smaller
-	Chunks        [][]byte               `protobuf:"bytes,4,rep,name=chunks,proto3" json:"chunks,omitempty"`            // SHA256 of each chunk, in order
-	Filename      string                 `protobuf:"bytes,5,opt,name=filename,proto3" json:"filename,omitempty"`        // optional human-readable name (debug only — untrusted)
-	Mime          string                 `protobuf:"bytes,6,opt,name=mime,proto3" json:"mime,omitempty"`                // optional content-type hint
-	PublishedAt   int64                  `protobuf:"varint,7,opt,name=publishedAt,proto3" json:"publishedAt,omitempty"` // unix nanoseconds
-	Publisher     []byte                 `protobuf:"bytes,8,opt,name=publisher,proto3" json:"publisher,omitempty"`      // NodeID
-	Sig           []byte                 `protobuf:"bytes,9,opt,name=sig,proto3" json:"sig,omitempty"`                  // Ed25519 by publisher over entire manifest
+	BlobHash      []byte                 `protobuf:"bytes,1,opt,name=blobHash,proto3" json:"blobHash,omitempty"`          // SHA256 of full reassembled content
+	TotalSize     uint64                 `protobuf:"varint,2,opt,name=totalSize,proto3" json:"totalSize,omitempty"`       // bytes
+	ChunkSize     uint32                 `protobuf:"varint,3,opt,name=chunkSize,proto3" json:"chunkSize,omitempty"`       // typically 1 MB (1<<20); last chunk may be smaller
+	Chunks        [][]byte               `protobuf:"bytes,4,rep,name=chunks,proto3" json:"chunks,omitempty"`              // SHA256 of each chunk, in order
+	Filename      string                 `protobuf:"bytes,5,opt,name=filename,proto3" json:"filename,omitempty"`          // optional human-readable name (debug only — untrusted)
+	Mime          string                 `protobuf:"bytes,6,opt,name=mime,proto3" json:"mime,omitempty"`                  // optional content-type hint
+	PublishedAt   int64                  `protobuf:"varint,7,opt,name=publishedAt,proto3" json:"publishedAt,omitempty"`   // unix nanoseconds
+	Publisher     []byte                 `protobuf:"bytes,8,opt,name=publisher,proto3" json:"publisher,omitempty"`        // NodeID
+	Sig           []byte                 `protobuf:"bytes,9,opt,name=sig,proto3" json:"sig,omitempty"`                    // Ed25519 by publisher over entire manifest
+	PublisherKey  []byte                 `protobuf:"bytes,10,opt,name=publisherKey,proto3" json:"publisherKey,omitempty"` // publisher's Ed25519 public key; publisher is its NodeID
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -332,6 +333,13 @@ func (x *Manifest) GetSig() []byte {
 	return nil
 }
 
+func (x *Manifest) GetPublisherKey() []byte {
+	if x != nil {
+		return x.PublisherKey
+	}
+	return nil
+}
+
 var File_content_proto protoreflect.FileDescriptor
 
 const file_content_proto_rawDesc = "" +
@@ -351,7 +359,7 @@ const file_content_proto_rawDesc = "" +
 	"\trequester\x18\x02 \x01(\fR\trequester\x12\x10\n" +
 	"\x03sig\x18\x03 \x01(\fR\x03sig\"H\n" +
 	"\x15ContentLocateResponse\x12/\n" +
-	"\x06advert\x18\x01 \x01(\v2\x17.swarm.v1.ContentAdvertR\x06advert\"\xfc\x01\n" +
+	"\x06advert\x18\x01 \x01(\v2\x17.swarm.v1.ContentAdvertR\x06advert\"\xa0\x02\n" +
 	"\bManifest\x12\x1a\n" +
 	"\bblobHash\x18\x01 \x01(\fR\bblobHash\x12\x1c\n" +
 	"\ttotalSize\x18\x02 \x01(\x04R\ttotalSize\x12\x1c\n" +
@@ -361,7 +369,9 @@ const file_content_proto_rawDesc = "" +
 	"\x04mime\x18\x06 \x01(\tR\x04mime\x12 \n" +
 	"\vpublishedAt\x18\a \x01(\x03R\vpublishedAt\x12\x1c\n" +
 	"\tpublisher\x18\b \x01(\fR\tpublisher\x12\x10\n" +
-	"\x03sig\x18\t \x01(\fR\x03sigB%Z#github.com/bbmumford/swarm/proto/pbb\x06proto3"
+	"\x03sig\x18\t \x01(\fR\x03sig\x12\"\n" +
+	"\fpublisherKey\x18\n" +
+	" \x01(\fR\fpublisherKeyB%Z#github.com/bbmumford/swarm/proto/pbb\x06proto3"
 
 var (
 	file_content_proto_rawDescOnce sync.Once

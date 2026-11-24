@@ -460,17 +460,17 @@ func verifyContentHash(hash [32]byte, body []byte) bool {
 }
 
 // verifyManifestSig validates the manifest's Ed25519 signature against
-// the publisher's public key (derived from the Publisher NodeID).
-// Returns false on any malformed input — the caller treats a false
-// return as an unsigned manifest and rejects it.
+// the publisher's public key, PublisherKey, which must be the key of the
+// Publisher NodeID (nodeIDBindsKey). Returns false on any malformed input —
+// the caller treats a false return as an unsigned manifest and rejects it.
 func verifyManifestSig(m *pb.Manifest) bool {
 	if m == nil || len(m.Sig) == 0 {
 		return false
 	}
-	pub, ok := pubFromNodeID(NodeID(m.Publisher))
-	if !ok {
+	if !nodeIDBindsKey(NodeID(m.Publisher), m.PublisherKey) {
 		return false
 	}
+	pub := ed25519.PublicKey(m.PublisherKey)
 	signable := signableManifestBytes(manifestSig{
 		BlobHash:    m.BlobHash,
 		TotalSize:   m.TotalSize,

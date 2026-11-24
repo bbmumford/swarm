@@ -150,26 +150,17 @@ type Config struct {
 	// (production wires the wall-clock ticker).
 	DisableBackgroundTicker bool
 
-	// ── Inbound trust / resource hardening (Phase-0.5 release blockers) ──
+	// ── Inbound trust and resource bounds ──
 
-	// TrustCheck, when non-nil, runs on every signature-verified inbound
-	// record BEFORE it can mutate the store (eager push, graft reply, and
-	// merkle range paths). Return a non-nil error to reject the record.
-	// This is the swarm-side enforcement point for an application
-	// TrustPolicy (NodeID↔key binding beyond the hex scheme, partition/topic
-	// authorization, role entitlement, revocation). nil = accept (the
-	// pre-hardening behaviour).
+	// TrustCheck runs on every inbound record that has passed the
+	// signature check and the key binding (its NodeID, or an observer
+	// attestation's ObserverNodeID, is the aether NodeID of the key that
+	// signed it), BEFORE the record can mutate the store (eager push, graft
+	// reply and merkle range paths). Return a non-nil error to reject the
+	// record. It is the application's authorization of what a proved node
+	// may write: partition and topic scope, role entitlement, revocation.
+	// nil accepts every proved record.
 	TrustCheck func(Record) error
-
-	// RequireNodeKeyBinding, when true, rejects any inbound owner record
-	// whose NodeID is not the canonical hex encoding of its embedded
-	// PubKey, and any observer attestation whose ObserverNodeID does not
-	// bind to its PubKey the same way. Deployments whose NodeIDs follow
-	// nodeIDFromPub (the default when Config.NodeID is left empty) should
-	// set this — it closes "any keypair can claim any NodeID" at the
-	// store boundary. Off by default for NodeID schemes that are not
-	// reversible to a key (fingerprints); those wire TrustCheck instead.
-	RequireNodeKeyBinding bool
 
 	// MaxClockSkew bounds how far ahead of the local wall clock an inbound
 	// record's HLC may sit before it is rejected. The HLC.Observe clamp

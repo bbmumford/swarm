@@ -45,13 +45,11 @@ func TestVerifyRecordIsExportedAndAcceptsAGenuineRecord(t *testing.T) {
 // ed25519.PublicKey(rec.PubKey) — the key the RECORD ITSELF SUPPLIES. That
 // proves the record is internally consistent; it does NOT prove the record
 // came from the NodeID it claims. An attacker signs with their own key and
-// writes any NodeID they like into the slot. Config.RequireNodeKeyBinding
-// closes that on the inbound gate when set, and it is off by default; loom's
-// node leaves it off and binds through its own TrustCheck, since this
-// package's hex(pubkey) NodeID differs from the mesh's NodeIDs.
+// writes any NodeID they like into the slot. The inbound gate closes that by
+// binding the NodeID to the key (recordBindsKey) before the store.
 //
-// The exported verifier derives the key from the NodeID instead, so the bind
-// holds BY CONSTRUCTION and cannot be left unwired.
+// The exported verifier applies the same bind, so a record a relay handed a
+// consumer is checked as the gate checks one.
 func TestVerifyRecordRejectsAKeypairClaimingAnotherNodeID(t *testing.T) {
 	victimPub, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {

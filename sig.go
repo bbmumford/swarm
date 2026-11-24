@@ -4,9 +4,10 @@
 package swarm
 
 import (
-	"bytes"
 	"crypto/ed25519"
 	"encoding/binary"
+
+	"github.com/ORBTR/aether"
 )
 
 // signableBytes returns the canonical byte form of a Record used as the
@@ -197,86 +198,51 @@ type manifestSig struct {
 	Publisher   []byte
 }
 
-// pubFromNodeID extracts the Ed25519 public key embedded in a NodeID. The
-// NodeID encoding is hex(pubkey) — 64 chars for a 32-byte key.
-func pubFromNodeID(id NodeID) (ed25519.PublicKey, bool) {
-	s := string(id)
-	if len(s) != 2*ed25519.PublicKeySize {
-		return nil, false
-	}
-	pub := make([]byte, ed25519.PublicKeySize)
-	for i := 0; i < ed25519.PublicKeySize; i++ {
-		hi, ok1 := hexNibble(s[2*i])
-		lo, ok2 := hexNibble(s[2*i+1])
-		if !ok1 || !ok2 {
-			return nil, false
-		}
-		pub[i] = (hi << 4) | lo
-	}
-	return pub, true
-}
-
-// nodeIDFromPub returns the NodeID encoding for a public key.
+// nodeIDFromPub returns the NodeID of a public key: its aether NodeID, the
+// identity every mesh session proves, so a record's slot names the node the
+// transport authenticated. A key of the wrong size has none (""), and binds
+// to no NodeID.
 func nodeIDFromPub(pub ed25519.PublicKey) NodeID {
-	const hex = "0123456789abcdef"
-	out := make([]byte, 2*len(pub))
-	for i, b := range pub {
-		out[2*i] = hex[b>>4]
-		out[2*i+1] = hex[b&0x0f]
+	id, err := aether.NewNodeID(pub)
+	if err != nil {
+		return ""
 	}
-	return NodeID(out)
+	return NodeID(id)
 }
 
-func hexNibble(c byte) (byte, bool) {
-	switch {
-	case c >= '0' && c <= '9':
-		return c - '0', true
-	case c >= 'a' && c <= 'f':
-		return c - 'a' + 10, true
-	case c >= 'A' && c <= 'F':
-		return c - 'A' + 10, true
-	default:
-		return 0, false
+// nodeIDBindsKey reports whether id is the NodeID of pub. The aether NodeID
+// is a one-way digest of the key, so a record proves its NodeID only by
+// carrying the key it was signed with.
+func nodeIDBindsKey(id NodeID, pub []byte) bool {
+	if len(pub) != ed25519.PublicKeySize || id == "" {
+		return false
 	}
+	return id == nodeIDFromPub(ed25519.PublicKey(pub))
 }
 
-// VerifyRecord reports whether r carries a valid owner signature, binding the
-// signature to the NodeID that claims the slot.
+// recordBindsKey reports whether r's signing key, r.PubKey, is the key of the
+// identity r is written under: NodeID for an owner record, ObserverNodeID for
+// an observer attestation (whose NodeID is the subject it reports on).
+func recordBindsKey(r Record) bool {
+	bindID := r.NodeID
+	if r.IsObserverAttestation() {
+		bindID = r.ObserverNodeID
+	}
+	return nodeIDBindsKey(bindID, r.PubKey)
+}
+
+// VerifyRecord reports whether r carries a valid signature by the identity it
+// is written under: r.PubKey must be the key of r.NodeID (of ObserverNodeID for
+// an observer attestation, recordBindsKey) and r.Sig a signature by that key
+// over the record. It is the check the inbound gate applies before
+// TrustCheck, exported for a consumer holding a record a relay handed it,
+// which must check the signature itself rather than trust the relay.
 //
-// 🔑 THIS IS THE PACKAGE'S ONLY EXPORTED WAY TO CHECK A RECORD, AND IT IS
-// DELIBERATELY STRICTER THAN THE INTERNAL PATH.
-//
-// The internal call sites (merkle.go, plumtrees.go) verify with
-// ed25519.PublicKey(rec.PubKey) — the key the RECORD ITSELF SUPPLIES. That
-// establishes the record is internally consistent and NOTHING about who sent
-// it: an attacker signs with their own key and writes any NodeID they like
-// into the slot. Closing that is what RequireNodeKeyBinding is for, and it is
-// off by default.
-//
-// An exported verifier cannot depend on a gate the caller may not have wired,
-// so this one derives the key FROM THE NODEID (the NodeID encoding is
-// hex(pubkey)) and the bind therefore holds BY CONSTRUCTION. A record signed
-// by one keypair while claiming another node's slot fails here even when the
-// internal path accepts it.
-//
-// Fails closed in every ambiguous case: an unparseable NodeID cannot be bound
-// to a key and is UNVERIFIABLE, which is never the same as verified; and a
-// PubKey field disagreeing with the NodeID is rejected rather than resolved in
-// favour of either.
-//
-// It exists because preserving a signature is not the same as being able to
-// check one: the directory projection carries Signature/PubKey/Body
-// byte-identically, and before this every consumer outside the package held a
-// valid signature it had no way to verify — forcing it to trust the relaying
-// node, which the Phase-0.5 plan explicitly rejects ("observer facts remain
-// explicitly third-party attestations").
+// Fails closed in every ambiguous case: a record without its key, or whose key
+// is not its identity's, is unverifiable, which is never the same as verified.
 func VerifyRecord(r Record) bool {
-	pub, ok := pubFromNodeID(r.NodeID)
-	if !ok {
+	if !recordBindsKey(r) {
 		return false
 	}
-	if len(r.PubKey) != 0 && !bytes.Equal(r.PubKey, pub) {
-		return false
-	}
-	return verifyRecord(r, pub)
+	return verifyRecord(r, ed25519.PublicKey(r.PubKey))
 }

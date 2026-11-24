@@ -58,14 +58,15 @@ func BuildSignedManifest(body []byte, chunkSize uint32, filename, mime string, p
 	}
 
 	manifest := &pb.Manifest{
-		BlobHash:    blobHash[:],
-		TotalSize:   uint64(len(body)),
-		ChunkSize:   chunkSize,
-		Chunks:      chunkHashBytes,
-		Filename:    filename,
-		Mime:        mime,
-		PublishedAt: time.Now().UnixNano(),
-		Publisher:   []byte(publisher),
+		BlobHash:     blobHash[:],
+		TotalSize:    uint64(len(body)),
+		ChunkSize:    chunkSize,
+		Chunks:       chunkHashBytes,
+		Filename:     filename,
+		Mime:         mime,
+		PublishedAt:  time.Now().UnixNano(),
+		Publisher:    []byte(publisher),
+		PublisherKey: append([]byte(nil), pub...),
 	}
 	signable := signableManifestBytes(manifestSig{
 		BlobHash:    manifest.BlobHash,

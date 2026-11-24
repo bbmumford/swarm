@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/ORBTR/aether"
 	"github.com/bbmumford/swarm"
 )
 
@@ -267,13 +268,12 @@ func (t *simTransport) DeliverInbound(f Frame) error {
 	return nil
 }
 
-// nodeIDFromPub is exposed via swarm.NodeIDFromPub.
+// nodeIDFromPub is the swarm NodeID of pub, its aether NodeID: the identity
+// the swarm engine binds every record's slot to.
 func nodeIDFromPub(pub ed25519.PublicKey) string {
-	const hex = "0123456789abcdef"
-	out := make([]byte, 2*len(pub))
-	for i, b := range pub {
-		out[2*i] = hex[b>>4]
-		out[2*i+1] = hex[b&0x0f]
+	id, err := aether.NewNodeID(pub)
+	if err != nil {
+		panic(err)
 	}
-	return string(out)
+	return string(id)
 }
