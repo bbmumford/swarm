@@ -20,14 +20,13 @@ import (
 // cold-start convergence test runs the real Plumtrees + δ-CRDT engine
 // through this bridge.
 type SwarmNode struct {
-	id         NodeID
-	swarmID    swarm.NodeID
-	node       swarm.Node
-	tport      *simTransport
-	cancel     context.CancelFunc
-	knownPeers []swarm.NodeID
-	virtTime   atomic.Int64 // unix-millis virtual time
-	priv       ed25519.PrivateKey
+	id       NodeID
+	swarmID  swarm.NodeID
+	node     swarm.Node
+	tport    *simTransport
+	cancel   context.CancelFunc
+	virtTime atomic.Int64 // unix-millis virtual time
+	priv     ed25519.PrivateKey
 }
 
 // virtualNow returns the SwarmNode's current virtual time. Used by the

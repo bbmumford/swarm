@@ -7,7 +7,7 @@
 //
 // The package exposes a single Node type whose API surface covers:
 //   - Subscribe/Publish on partition-scoped topics
-//   - PerPeerConfig: per-peer adaptive interval + backpressure + RTT state
+//   - PerPeerConfig: per-peer adaptive interval + backpressure + bandwidth cap
 //   - SetRole: runtime role change with tree-edge rebalance
 //   - SetPartition: partition rebind with tombstone-and-republish
 //   - Pause/Resume: resource-governor integration

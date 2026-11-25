@@ -742,17 +742,3 @@ func (n *nodeImpl) deliverToSubs(r Record) {
 		_ = fn(r)
 	}
 }
-
-// ---------- Internal record-store accessor ----------
-//
-// Used by the simulator + tests to assert convergence.
-
-// internalStore exposes the recordStore for tests and the simulator wrapper.
-// Not part of the public Node interface.
-func internalStore(n Node) *recordStore {
-	impl, ok := n.(*nodeImpl)
-	if !ok {
-		return nil
-	}
-	return impl.store
-}

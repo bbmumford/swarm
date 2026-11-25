@@ -21,8 +21,6 @@ import (
 // Tree-edge selection: prefer first-source-seen peer until proven slower.
 // Tree degree is bounded by Config.TreeDegree.
 type plumtreesEngine struct {
-	mu sync.RWMutex
-
 	localID  NodeID
 	store    *recordStore
 	peers    *peerTable
@@ -408,8 +406,9 @@ func (e *plumtreesEngine) handlePrune(from NodeID, p *pb.Prune) error {
 	return nil
 }
 
-// Tick is called periodically by the Node to drive lazy-push timeouts
-// (graft missing records) and tree-edge keepalives.
+// Tick is called periodically by the Node to drive lazy-push timeouts: it
+// grafts each record an IHave announced that eager push has not delivered
+// within the grace period.
 //
 // Tick continues firing while the engine is paused — graft processing is
 // considered correctness-critical (without it, lazy-only paths never heal).

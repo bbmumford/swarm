@@ -112,9 +112,3 @@ func framePrune(topic Topic) *pb.Frame {
 		},
 	}
 }
-
-func frameKeepalive() *pb.Frame {
-	return &pb.Frame{
-		Kind: &pb.Frame_Keepalive{Keepalive: &pb.Keepalive{}},
-	}
-}

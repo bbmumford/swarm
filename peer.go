@@ -9,8 +9,8 @@ import (
 )
 
 // peerCtx is per-peer state owned by the swarm engine. It holds the
-// adaptive interval / backpressure / RTT data plus the PerPeerConfig
-// snapshot used by the Plumtrees tree-edge picker.
+// backpressure queue and bandwidth bucket plus the PerPeerConfig snapshot
+// used by the Plumtrees tree-edge picker.
 type peerCtx struct {
 	id NodeID
 
@@ -19,18 +19,11 @@ type peerCtx struct {
 	// Configuration (from Config.PerPeerConfig or PerPeerOverride)
 	cfg PerPeerConfig
 
-	// Adaptive state
-	lastRTT          time.Duration
-	rttEMA           time.Duration // exponential moving average
-	missedKeepalives int
-
 	// Backpressure
-	lazyQueue     []lazyEntry // pending IHave announcements to this peer
-	lastEagerSent time.Time
+	lazyQueue []lazyEntry // pending IHave announcements to this peer
 
 	// Liveness
-	lastSeen   time.Time
-	lastSentAt time.Time
+	lastSeen time.Time
 
 	// Tree-edge state (Plumtrees)
 	isTreeEdge bool // true if we eagerly push to this peer
