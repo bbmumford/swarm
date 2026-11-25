@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"errors"
 	"testing"
 	"time"
 
@@ -33,8 +34,18 @@ func TestSetPartitionTombstonesSelfRecords(t *testing.T) {
 	if err := swarm.Wire(node, tport); err != nil {
 		t.Fatal(err)
 	}
-	go node.Start(context.Background())
-	defer node.Stop()
+	// Start runs until Stop and then returns nil, or ErrStopped when the
+	// deferred Stop runs before it starts; any other answer fails the test.
+	started := make(chan error, 1)
+	go func() { started <- node.Start(context.Background()) }()
+	defer func() {
+		if err := node.Stop(); err != nil {
+			t.Errorf("node.Stop: %v", err)
+		}
+		if err := <-started; err != nil && !errors.Is(err, swarm.ErrStopped) {
+			t.Errorf("node.Start: %v", err)
+		}
+	}()
 
 	// Publish a record pre-partition
 	if err := node.Publish("test", []byte("pre-tenant body")); err != nil {
@@ -145,8 +156,18 @@ func TestSetRoleNotifiesCallback(t *testing.T) {
 	if err := swarm.Wire(node, tport); err != nil {
 		t.Fatal(err)
 	}
-	go node.Start(context.Background())
-	defer node.Stop()
+	// Start runs until Stop and then returns nil, or ErrStopped when the
+	// deferred Stop runs before it starts; any other answer fails the test.
+	started := make(chan error, 1)
+	go func() { started <- node.Start(context.Background()) }()
+	defer func() {
+		if err := node.Stop(); err != nil {
+			t.Errorf("node.Stop: %v", err)
+		}
+		if err := <-started; err != nil && !errors.Is(err, swarm.ErrStopped) {
+			t.Errorf("node.Start: %v", err)
+		}
+	}()
 
 	if err := node.SetRole(swarm.RoleAnchor); err != nil {
 		t.Fatal(err)

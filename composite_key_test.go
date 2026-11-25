@@ -863,12 +863,14 @@ func TestGraftServesTheKeyedSlotItAskedFor(t *testing.T) {
 
 	// Drive the responder's graft handler directly with a keyed request —
 	// this is exactly the frame a peer sends after a keyed IHave.
-	a.impl.plum.handleGraft(b.id, &pb.Graft{
+	if err := a.impl.plum.handleGraft(b.id, &pb.Graft{
 		Topic:  string(topic),
 		NodeId: []byte(a.id),
 		Key:    "peer-1",
 		Hlc:    0,
-	})
+	}); err != nil {
+		t.Fatalf("a.impl.plum.handleGraft: %v", err)
+	}
 
 	ok := waitUntil(t, 3*time.Second, func() bool {
 		mu.Lock()

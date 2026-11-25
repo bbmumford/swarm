@@ -356,11 +356,9 @@ func (n *nodeImpl) PublishKeyed(topic Topic, key string, body []byte) error {
 	if n.stopped.Load() {
 		return ErrStopped
 	}
-	if n.paused.Load() {
-		// Eager-push records to existing tree edges still go out on
-		// correctness paths during pause. Publish from the local node
-		// is treated as correctness-critical.
-	}
+	// A paused node still publishes: eager-push records to existing tree
+	// edges go out on correctness paths during pause, and Publish from the
+	// local node is treated as correctness-critical.
 	if len(body) > n.cfg.MaxRecordBytes {
 		return ErrTooLarge
 	}
