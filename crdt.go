@@ -31,7 +31,9 @@ import (
 //
 // The δ-CRDT property: for any two stores A and B, A.merge(B) == B.merge(A).
 // Merge is HLC-max (highest HLC wins; ties broken lexicographically on the
-// signature bytes for determinism).
+// signature bytes for determinism), unless Config.TopicMerge gives the topic
+// its own rule (replacesLocked); that rule must be a strict order for the
+// property to hold.
 //
 // Observer-tombstone (N-of-M witness) extension: when a Record carries
 // IsObserverAttestation() == true it does NOT directly overwrite the
@@ -72,6 +74,10 @@ type recordStore struct {
 	// nowFn — wall clock for attestation-window pruning. Defaults to
 	// time.Now; the deterministic simulator overrides via SetNowFn.
 	nowFn func() time.Time
+
+	// mergeFor returns a topic's own merge rule for owner records
+	// (Config.TopicMerge); nil, or a nil rule for a topic, keeps HLC-max.
+	mergeFor func(Topic) MergeFunc
 
 	// Cardinality caps (Phase-0.5 hardening). Zero = defaults applied by
 	// setCaps. Enforcement is reject-new, never evict-old: eviction under
@@ -340,7 +346,7 @@ func (s *recordStore) ApplyExt(r Record) (applied bool, replaced bool, accumulat
 	}
 	replaced = true
 
-	if r.HLC > cur.HLC || (r.HLC == cur.HLC && sigLess(cur.Sig, r.Sig)) {
+	if s.replacesLocked(r.Topic, cur, r) {
 		ts.records[slot] = r
 		// A fresh owner publish supersedes any synthesised tombstone.
 		// Clear stale attestations for this target so a future death
@@ -359,6 +365,36 @@ func (s *recordStore) ApplyExt(r Record) (applied bool, replaced bool, accumulat
 		return true, true, false
 	}
 	return false, true, false
+}
+
+// setMerge installs the per-topic merge rule (Config.TopicMerge); nil keeps
+// the default for every topic.
+func (s *recordStore) setMerge(fn func(Topic) MergeFunc) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.mergeFor = fn
+}
+
+// hasMerge reports whether topic has its own merge rule. handleIHave reads it:
+// under the default rule a held stamp at or above an announced one already
+// wins, so the announcement is skipped; under a topic's own rule the
+// announced record may still win, so it is grafted.
+func (s *recordStore) hasMerge(topic Topic) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.mergeFor != nil && s.mergeFor(topic) != nil
+}
+
+// replacesLocked reports whether incoming replaces cur in their slot: the
+// topic's own rule when Config.TopicMerge gives one, otherwise the highest
+// HLC with the signature breaking a tie. Called under s.mu.
+func (s *recordStore) replacesLocked(topic Topic, cur, incoming Record) bool {
+	if s.mergeFor != nil {
+		if m := s.mergeFor(topic); m != nil {
+			return m(cur, incoming)
+		}
+	}
+	return incoming.HLC > cur.HLC || (incoming.HLC == cur.HLC && sigLess(cur.Sig, incoming.Sig))
 }
 
 // countedLocked returns the attestations in set that count toward the

@@ -92,6 +92,9 @@ func New(cfg Config) (Node, error) {
 		onResumed: cfg.OnResumed,
 	}
 	n.store.setCaps(cfg.MaxTopics, cfg.MaxRecordsPerTopic, cfg.MaxKeysPerNodePerTopic, cfg.MaxAttestationsPerTarget)
+	if cfg.TopicMerge != nil {
+		n.store.setMerge(cfg.TopicMerge)
+	}
 	if cfg.NowFn != nil {
 		n.store.SetNowFn(cfg.NowFn)
 	}
@@ -123,6 +126,7 @@ func Wire(n Node, t Transport) error {
 	impl.plum.SetMerkle(impl.merkle)
 	impl.merkle.SetRumor(impl.plum.forwardRepaired)
 	impl.plum.SetOnApplied(impl.recordAccepted)
+	impl.plum.onBroadcast = func(r Record) { impl.deliverToSubs(cloneRecord(r)) }
 	impl.merkle.SetOnApplied(impl.recordAccepted)
 	impl.content = newContentTopic(impl)
 	impl.plum.SetFetchHandlers(impl.content.handleFetchRequest, impl.content.handleFetchResponse)

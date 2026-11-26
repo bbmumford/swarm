@@ -82,6 +82,29 @@ type Record struct {
 	// older than corroborationWindow is ignored. Zero for owner-signed
 	// records.
 	ObservedAtUnixMs int64
+
+	// Broadcast marks a message that is delivered to each subscriber of its
+	// topic once and never stored: it is not merged into a slot, not
+	// announced lazily and not repaired, so a node that is away while it
+	// travels never receives it (Broadcaster). Broadcast is covered by Sig,
+	// so relabelling a broadcast as a stored record, or the reverse, breaks
+	// the signature.
+	Broadcast bool
+}
+
+// MergeFunc reports whether incoming replaces current in their slot (topic,
+// node, key); see Config.TopicMerge.
+type MergeFunc func(current, incoming Record) bool
+
+// Broadcaster sends messages that are delivered once and never stored. The
+// Node that New returns is a Broadcaster.
+type Broadcaster interface {
+	// Broadcast signs body as a Broadcast record on topic and pushes it to
+	// the eager tree. Each node that receives it delivers it to its own
+	// subscribers of topic once and forwards it to its other tree edges
+	// within the eager hop budget. Nothing is stored, announced lazily or
+	// repaired.
+	Broadcast(topic Topic, body []byte) error
 }
 
 // IsObserverAttestation reports whether r is an observer-signed
@@ -218,6 +241,18 @@ type Config struct {
 	// checkpoint-governed retention lives in the journal layer above —
 	// this is the in-memory bound.
 	TopicTTL func(Topic) time.Duration
+
+	// TopicMerge, when non-nil, returns the merge rule for a topic's
+	// owner-signed records, or nil for a topic that keeps the default: the
+	// highest HLC wins, the signature breaking a tie. A rule reports whether
+	// incoming replaces current in their slot. Every node must run the same
+	// rule for a topic, and the rule must be a strict order over the records
+	// a slot can hold: of two different records exactly one replaces the
+	// other, and no record replaces itself; nodes whose rules disagree settle
+	// on different winners and anti-entropy never converges. It runs under
+	// the store's lock, so it must be quick and must not call back into the
+	// node. Observer attestations keep their own rule.
+	TopicMerge func(Topic) MergeFunc
 }
 
 // Defaults for the observer-tombstone (N-of-M witness) gate.

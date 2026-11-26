@@ -20,7 +20,13 @@ What a node stores and how copies converge:
   (NodeID, Key); a node that never sets `Key` holds one slot per topic.
 - **Merge.** A slot keeps the record with the highest clock stamp, ties broken
   by the signature bytes, so any two stores merge to the same result in either
-  order. Tombstones override live records.
+  order. Tombstones override live records. `TopicMerge` gives a stateful topic
+  its own rule for which of a slot's signed records wins (a strict order every
+  node runs alike), for state whose newest value is not the latest stamp.
+- **Broadcast.** `Broadcast` (the `Broadcaster` the node implements) sends a
+  signed message that each subscriber receives once and no store keeps: it
+  rides the eager tree with a hop budget, duplicates are dropped, and a node
+  away while it travels never sees it.
 - **Observer tombstones.** Other nodes can attest that a node has gone silent.
   When enough distinct observers attest within a window
   (`SetObserverQuorum`), each store tombstones every slot that node holds on the
@@ -35,6 +41,11 @@ What a node stores and how copies converge:
   `MaxClockSkew` (default 10 minutes) ahead of the local clock are refused, and
   the store refuses new topics, slots and per-node keys past `MaxTopics`,
   `MaxRecordsPerTopic` and `MaxKeysPerNodePerTopic` rather than evicting.
+- **Tree.** Eager push follows a tree each node seeds along hypercube
+  dimensions: members sorted by NodeID take their index as a cube position,
+  and a node's first tree edges are the peers one bit away (as many as the
+  cube has dimensions, at least `TreeDegree`), so an eager push crosses the
+  mesh in about log2(N) hops; Plumtree's prunes and grafts then keep it a tree.
 - **Per-peer pacing.** `PerPeerConfig` gives each peer its own adaptive
   interval, backpressure limit, bandwidth cap and priority class.
 - **Roles, partitions and pausing.** `SetRole` changes the node's role and

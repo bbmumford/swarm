@@ -19,6 +19,7 @@ import (
 //	body_len:u32 || body || pub_key ||
 //	observer_node_id_len:u16 || observer_node_id || observed_at_ms:i64 ||
 //	[ key_len:u16 || key ]      <- emitted ONLY when Key != ""
+//	[ "BCST" ]                  <- emitted ONLY when Broadcast
 //
 // PubKey is included so a forger cannot rebind a valid sig to a different
 // PubKey claim (which would otherwise let a publisher impersonate any
@@ -65,6 +66,9 @@ func signableBytes(r Record) []byte {
 	if len(key) > 0 {
 		n += 2 + len(key)
 	}
+	if r.Broadcast {
+		n += len(broadcastSuffix)
+	}
 	buf := make([]byte, 0, n)
 
 	var tlen [2]byte
@@ -110,8 +114,19 @@ func signableBytes(r Record) []byte {
 		buf = append(buf, key...)
 	}
 
+	// Conditional broadcast suffix, emitted only for Record.Broadcast, so a
+	// stored record's bytes stay as they were. It cannot be read as a key
+	// suffix: that would put the suffix's first two bytes (0x4243) in the key
+	// length, and fewer bytes follow.
+	if r.Broadcast {
+		buf = append(buf, broadcastSuffix...)
+	}
+
 	return buf
 }
+
+// broadcastSuffix ends the signable bytes of a broadcast (Record.Broadcast).
+var broadcastSuffix = []byte("BCST")
 
 // signRecord stamps r.PubKey from priv and sets r.Sig = Ed25519 signature
 // over signableBytes(r) using priv. After signRecord returns, the record

@@ -39,6 +39,7 @@ func recordToProto(r Record) *pb.Record {
 		ObserverNodeId:   []byte(r.ObserverNodeID),
 		ObservedAtUnixMs: r.ObservedAtUnixMs,
 		Key:              r.Key,
+		Broadcast:        r.Broadcast,
 	}
 }
 
@@ -55,6 +56,7 @@ func recordFromProto(p *pb.Record) Record {
 		ObserverNodeID:   NodeID(p.ObserverNodeId),
 		ObservedAtUnixMs: p.ObservedAtUnixMs,
 		Key:              p.Key,
+		Broadcast:        p.Broadcast,
 	}
 }
 

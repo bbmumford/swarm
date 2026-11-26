@@ -59,6 +59,13 @@ message Record {
   // signable bytes it always did, and no pre-existing signature is
   // invalidated. See swarm/sig.go.
   string key = 10;
+
+  // broadcast marks a message delivered to each subscriber once and never
+  // stored. It is covered by sig through a suffix appended to the canonical
+  // signing bytes only when true, so a stored record's signable bytes are
+  // unchanged, and a node that does not know this field recomputes bytes
+  // without the suffix and drops the broadcast instead of storing it.
+  bool broadcast = 11;
 }
 
 // Frame is the on-wire envelope for swarm protocol messages.

@@ -49,6 +49,12 @@ type plumtreesEngine struct {
 	merkle    *merkleEngine
 	onApplied func(r Record)
 
+	// broadcasts holds the broadcasts already delivered and forwarded, so a
+	// copy arriving over a second path is dropped (handleBroadcast);
+	// onBroadcast hands a new one to the Node's subscribers.
+	broadcasts  seenBroadcasts
+	onBroadcast func(r Record)
+
 	// Point-to-point content fetch handlers. Installed by Wire() so the
 	// transport-routed Frame_FetchReq / Frame_FetchResp frames dispatch
 	// to the ContentTopic implementation without exposing the node's
@@ -264,6 +270,11 @@ func (e *plumtreesEngine) handleEager(from NodeID, ep *pb.EagerPush) error {
 	// Observe HLC for future stamps
 	e.hlc.Observe(r.HLC)
 
+	if r.Broadcast {
+		e.handleBroadcast(from, r, ep.Ttl)
+		return nil
+	}
+
 	applied, replaced, accumulated := e.store.ApplyExt(r)
 
 	// Observer-attestation relay: a below-quorum attestation returns
@@ -332,14 +343,21 @@ func (e *plumtreesEngine) handleEager(from NodeID, ep *pb.EagerPush) error {
 //
 // If we already have the record (or newer), ignore.
 // Otherwise, record the IHave and schedule a GRAFT request after graftDelay.
+//
+// On a topic with its own merge rule (Config.TopicMerge) "newer" is not
+// "higher HLC": the announced record may win with a lower stamp, so only the
+// very stamp already held is ignored, and the graft's reply is merged by the
+// store's rule.
 func (e *plumtreesEngine) handleIHave(from NodeID, ih *pb.IHave) error {
 	topic := Topic(ih.Topic)
 	nodeID := NodeID(ih.NodeId)
 	// getRaw: a tombstoned slot still counts as "have" — the public Get
 	// hides tombstones, which would make us re-graft records our
 	// tombstone already supersedes.
-	if cur, ok := e.store.getRawKeyed(topic, nodeID, ih.Key); ok && cur.HLC >= ih.Hlc {
-		return nil
+	if cur, ok := e.store.getRawKeyed(topic, nodeID, ih.Key); ok {
+		if cur.HLC == ih.Hlc || (cur.HLC > ih.Hlc && !e.store.hasMerge(topic)) {
+			return nil
+		}
 	}
 
 	key := ihaveKey{topic, nodeID, ih.Key, ih.Hlc}
@@ -533,33 +551,54 @@ func (e *plumtreesEngine) SetPaused(paused bool) {
 }
 
 // bestTreeEdges returns the set of peers we eagerly push to. If the
-// current tree-edge set is empty or below TreeDegree, we promote
-// additional non-tree peers up to the degree budget. Promotion order
-// honors PerPeerConfig.PriorityClass (descending) with NodeID as a
-// deterministic tiebreaker, so high-priority peers (anchors, edge
-// services) become tree edges before low-priority peers.
+// current tree-edge set is below treeTarget, we promote additional non-tree
+// peers up to it. Promotion order honors PerPeerConfig.PriorityClass
+// (descending), so high-priority peers (anchors, edge services) become tree
+// edges before low-priority peers; within a class it follows hypercubeRank,
+// cube neighbours first, with NodeID as a deterministic tiebreaker.
 func (e *plumtreesEngine) bestTreeEdges() []NodeID {
 	cur := e.peers.TreeEdges()
-	if len(cur) >= e.treeDeg {
+	all := e.peers.NonTreeEdges()
+	target := e.treeTarget(len(cur) + len(all))
+	if len(cur) >= target {
 		return cur
 	}
 
-	all := e.peers.NonTreeEdges()
+	rank := hypercubeRank(e.localID, append(append([]NodeID(nil), cur...), all...))
 	sort.Slice(all, func(i, j int) bool {
 		pi := e.peers.Snapshot(all[i]).PriorityClass
 		pj := e.peers.Snapshot(all[j]).PriorityClass
 		if pi != pj {
 			return pi > pj
 		}
+		if ri, rj := rank[all[i]], rank[all[j]]; ri != rj {
+			return ri < rj
+		}
 		return all[i] < all[j]
 	})
 
-	need := e.treeDeg - len(cur)
+	need := target - len(cur)
 	for i := 0; i < need && i < len(all); i++ {
 		e.peers.SetTreeEdge(all[i], true)
 		cur = append(cur, all[i])
 	}
 	return cur
+}
+
+// treeTarget is how many tree edges bestTreeEdges seeds among peers known
+// peers: TreeDegree, raised to the hypercube's dimension count when that is
+// larger, since an eager graph missing a dimension's edges splits the cube
+// into blocks no eager push crosses; capped at maxTreeEdges, the bound
+// inbound promotion keeps too.
+func (e *plumtreesEngine) treeTarget(peers int) int {
+	t := e.treeDeg
+	if d := hypercubeDims(peers + 1); d > t {
+		t = d
+	}
+	if m := e.maxTreeEdges(); t > m {
+		t = m
+	}
+	return t
 }
 
 // sendPrune notifies a peer to demote us from tree-edge status.
