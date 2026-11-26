@@ -4,6 +4,7 @@
 package swarm
 
 import (
+	"bytes"
 	"sort"
 	"sync"
 	"time"
@@ -634,6 +635,29 @@ func (s *recordStore) NodeRecords(topic Topic, node NodeID) []Record {
 	}
 	s.mu.RUnlock()
 	return out
+}
+
+// heldOrNewer reports whether r's slot holds r's own version (the same HLC and
+// signature) or a newer one: the versions Apply refuses whatever r carries.
+// merkleEngine.HandleRange asks before verifying r, so a range repeating what
+// this node holds costs a lookup per record instead of a signature check and
+// an admission. An observer attestation accumulates per observer instead of
+// replacing a slot, so it is never reported held.
+func (s *recordStore) heldOrNewer(r Record) bool {
+	if r.IsObserverAttestation() {
+		return false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	ts, ok := s.byTopic[r.Topic]
+	if !ok {
+		return false
+	}
+	cur, had := ts.records[keyOf(r)]
+	if !had {
+		return false
+	}
+	return cur.HLC > r.HLC || (cur.HLC == r.HLC && bytes.Equal(cur.Sig, r.Sig))
 }
 
 // getRaw returns the slot as stored — tombstones included, slices shared.

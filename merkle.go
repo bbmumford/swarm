@@ -386,6 +386,13 @@ func (m *merkleEngine) HandleProbe(from NodeID, p *pb.MerkleProbe) {
 func (m *merkleEngine) HandleRange(from NodeID, hlc *HLC, r *pb.MerkleRange) {
 	for _, pr := range r.Records {
 		rec := recordFromProto(pr)
+		// A version this node holds, or one older than it holds, would be refused
+		// by Apply whatever it carries; skipping it before the signature check
+		// keeps ranges that repeat held records cheap, since both sides answer
+		// each probe with every record in range while the other still differs.
+		if m.store.heldOrNewer(rec) {
+			continue
+		}
 		if len(rec.PubKey) != ed25519.PublicKeySize || !verifyRecord(rec, ed25519.PublicKey(rec.PubKey)) {
 			continue
 		}

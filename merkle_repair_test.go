@@ -6,6 +6,8 @@ package swarm
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -123,5 +125,92 @@ func TestARecordRepairedTwiceStartsOneRumor(t *testing.T) {
 
 	if len(rumors) != 1 || rumors[0] != a.id {
 		t.Fatalf("rumors started = %v, want exactly one, from %.8s", rumors, a.id)
+	}
+}
+
+// A range that repeats versions this node already holds is not verified and
+// admitted again: Apply refuses a held or older version whatever it carries,
+// and when both sides answer each probe with records the other holds, checking
+// those again is the work that starves the records still missing. A newer
+// version of a held slot, and a slot not held, are still admitted.
+func TestHandleRangeAdmitsAHeldVersionOnce(t *testing.T) {
+	var admitted atomic.Int64
+	net := newMemNet()
+	b := startNode(t, net, Config{TrustCheck: func(Record) error { admitted.Add(1); return nil }})
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := nodeIDFromPub(priv.Public().(ed25519.PublicKey))
+	topic := Topic("t.held")
+	keyedBody := func(key string, hlc uint64, body string) Record {
+		r := Record{Topic: topic, NodeID: id, Key: key, HLC: hlc, Body: []byte(body)}
+		signRecord(&r, priv)
+		return r
+	}
+	keyed := func(key string, hlc uint64) Record { return keyedBody(key, hlc, key) }
+	now := b.impl.hlc.Now()
+	var recs []*pb.Record
+	for i := 0; i < 10; i++ {
+		recs = append(recs, recordToProto(keyed(fmt.Sprintf("k-%02d", i), now+uint64(i))))
+	}
+	rng := &pb.MerkleRange{Topic: string(topic), Records: recs}
+
+	b.impl.merkle.HandleRange(id, b.impl.hlc, rng)
+	if got := admitted.Load(); got != 10 {
+		t.Fatalf("first range: %d records admitted, want 10", got)
+	}
+	if got := len(b.node.NodeRecords(topic, id)); got != 10 {
+		t.Fatalf("first range: %d records held, want 10", got)
+	}
+
+	b.impl.merkle.HandleRange(id, b.impl.hlc, rng)
+	if got := admitted.Load() - 10; got != 0 {
+		t.Fatalf("a range of held versions was admitted %d more times, want none", got)
+	}
+
+	older := &pb.MerkleRange{Topic: string(topic), Records: []*pb.Record{recordToProto(keyed("k-05", now))}}
+	b.impl.merkle.HandleRange(id, b.impl.hlc, older)
+	if got := admitted.Load() - 10; got != 0 {
+		t.Fatalf("an older version of a held slot was admitted %d times, want none", got)
+	}
+
+	// The same HLC under another signature is a rival version the tie-break
+	// decides, so it is checked and admitted.
+	tie := &pb.MerkleRange{Topic: string(topic), Records: []*pb.Record{recordToProto(keyedBody("k-03", now+3, "rival"))}}
+	b.impl.merkle.HandleRange(id, b.impl.hlc, tie)
+	if got := admitted.Load() - 10; got != 1 {
+		t.Fatalf("a rival version at a held HLC: %d admitted, want 1", got)
+	}
+
+	fresh := &pb.MerkleRange{Topic: string(topic), Records: []*pb.Record{
+		recordToProto(keyed("k-05", now+100)), recordToProto(keyed("k-new", now+101)),
+	}}
+	b.impl.merkle.HandleRange(id, b.impl.hlc, fresh)
+	if got := admitted.Load() - 11; got != 2 {
+		t.Fatalf("a newer version and a new slot: %d admitted, want 2", got)
+	}
+	if r, ok := b.node.GetKeyed(topic, id, "k-05"); !ok || r.HLC != now+100 {
+		t.Fatalf("k-05 after the newer version: held=%v hlc=%d, want %d", ok, r.HLC, now+100)
+	}
+
+	// An observer attestation accumulates per observer instead of replacing its
+	// target's slot, so a newer owner record held there does not make it held.
+	_, obsPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	obs := nodeIDFromPub(obsPriv.Public().(ed25519.PublicKey))
+	ownerHLC := b.impl.hlc.Now()
+	owner := Record{Topic: Topic("fleet.peer"), NodeID: id, HLC: ownerHLC, Body: []byte("alive")}
+	signRecord(&owner, priv)
+	if applied, _ := b.impl.store.Apply(owner); !applied {
+		t.Fatal("store refused the owner record")
+	}
+	before := admitted.Load()
+	att := observerAttestation(t, obsPriv, obs, id, ownerHLC-1)
+	b.impl.merkle.HandleRange(obs, b.impl.hlc, &pb.MerkleRange{Topic: "fleet.peer", Records: []*pb.Record{recordToProto(att)}})
+	if got := admitted.Load() - before; got != 1 {
+		t.Fatalf("an attestation about a node whose newer record is held: %d admitted, want 1", got)
 	}
 }
