@@ -31,9 +31,9 @@ func TestHLC_Now_Monotonic(t *testing.T) {
 
 // TestHLC_Observe_RejectsFarFutureWall is the security guard: a peer that
 // gossips a wall-clock far in the future must NOT ratchet the local HLC
-// forward. Before the clamp, observing such a value pushed the wall component
-// years ahead, after which Now() could only bump the 16-bit counter (wrapping
-// at 65536 events in the same wall ms). The injected clock makes this
+// forward. Without the clamp, observing such a value pushes the wall component
+// years ahead, and every later stamp is issued from that wall instead of real
+// time. The injected clock makes this
 // deterministic: the resulting wall must stay at the fixed "now", not the
 // far-future value.
 func TestHLC_Observe_RejectsFarFutureWall(t *testing.T) {
@@ -140,5 +140,82 @@ func TestHLC_Observe_LocalExceedsRemote(t *testing.T) {
 	h.Observe(remote)
 	if got := h.Now(); got <= remote {
 		t.Fatalf("after Observe(%d), Now()=%d must be greater", remote, got)
+	}
+}
+
+// TestHLC_Now_CarriesAFullCounterIntoTheWall pins the counter's upper edge: a
+// stamp whose 16-bit counter is full (here an in-budget remote adopted by
+// Observe) is followed by the first stamp of the next millisecond. Packing
+// counter+1 there would drop it to 0 and issue a stamp below the one observed,
+// which every slot's highest-HLC-wins merge would then order wrongly.
+func TestHLC_Now_CarriesAFullCounterIntoTheWall(t *testing.T) {
+	h := NewHLC()
+	wall, _ := Decompose(h.Now())
+	ahead := wall + 60_000 // one minute ahead: inside the forward-skew budget
+	full := packHLC(ahead, 0xFFFF)
+	h.Observe(full)
+
+	next := h.Now()
+	if next <= full {
+		w, c := Decompose(next)
+		t.Fatalf("the stamp after a full counter must exceed it: got wall %d counter %d, after wall %d counter 65535", w, c, ahead)
+	}
+	if w, c := Decompose(next); w != ahead+1 || c != 0 {
+		t.Fatalf("a full counter carries into the next millisecond: got wall %d counter %d, want wall %d counter 0", w, c, ahead+1)
+	}
+}
+
+// TestHLCWithNow_FrozenWallStaysMonotonic issues more stamps than the counter
+// holds while the injected wall never moves: each is greater than the last,
+// and the stamp after the 65,535th of the millisecond is in the next one.
+func TestHLCWithNow_FrozenWallStaysMonotonic(t *testing.T) {
+	frozen := time.UnixMilli(1_700_000_000_000)
+	h := NewHLCWithNow(func() time.Time { return frozen })
+	prev := h.Now()
+	for i := 0; i < 70_000; i++ {
+		next := h.Now()
+		if next <= prev {
+			pw, pc := Decompose(prev)
+			nw, nc := Decompose(next)
+			t.Fatalf("stamp %d not above the one before: wall %d counter %d then wall %d counter %d", i, pw, pc, nw, nc)
+		}
+		prev = next
+	}
+	if w, _ := Decompose(prev); w != 1_700_000_000_001 {
+		t.Fatalf("70,001 stamps in one frozen millisecond should end in the next one: got wall %d", w)
+	}
+}
+
+// TestHLCWithNow_ReadsTheInjectedWall checks that Now and Observe both read the
+// injected clock: the first stamp is at the injected millisecond, and a remote
+// one millisecond past the forward-skew budget of the injected time is
+// refused even though real time is years later.
+func TestHLCWithNow_ReadsTheInjectedWall(t *testing.T) {
+	const nowMs int64 = 1_700_000_000_000
+	h := NewHLCWithNow(func() time.Time { return time.UnixMilli(nowMs) })
+	if w, c := Decompose(h.Now()); w != uint64(nowMs) || c != 1 {
+		t.Fatalf("first stamp of an injected clock: got wall %d counter %d, want wall %d counter 1", w, c, nowMs)
+	}
+	budget := uint64(observerForwardSkewBudget.Milliseconds())
+	h.Observe(packHLC(uint64(nowMs)+budget+1, 0))
+	if w, _ := Decompose(h.Now()); w != uint64(nowMs) {
+		t.Fatalf("a remote past the budget of the injected wall must be refused: got wall %d, want %d", w, nowMs)
+	}
+}
+
+// TestPack_IsDecomposesInverse pins the packed layout a package converting its
+// own stamps relies on.
+func TestPack_IsDecomposesInverse(t *testing.T) {
+	for _, c := range []struct {
+		wall uint64
+		ctr  uint16
+	}{{0, 0}, {1_700_000_000_000, 0}, {1_700_000_000_000, 0xFFFF}, {1<<48 - 1, 7}} {
+		v := Pack(c.wall, c.ctr)
+		if v != c.wall<<16|uint64(c.ctr) {
+			t.Fatalf("Pack(%d, %d) = %d, want wall<<16|counter", c.wall, c.ctr, v)
+		}
+		if w, ctr := Decompose(v); w != c.wall || ctr != c.ctr {
+			t.Fatalf("Decompose(Pack(%d, %d)) = (%d, %d)", c.wall, c.ctr, w, ctr)
+		}
 	}
 }

@@ -12,20 +12,49 @@ import (
 // a tie-break counter so concurrent events at the same wall time get
 // distinct, totally-ordered timestamps.
 //
-// Encoding: high 48 bits = unix milliseconds, low 16 bits = counter.
-// Wraps every ~8900 years for the wall portion; counter resets every ms.
+// Encoding: high 48 bits = unix milliseconds, low 16 bits = counter (Pack
+// and Decompose). The wall portion wraps every ~8900 years; the counter
+// resets each millisecond, and a counter that is full within one
+// millisecond carries into the next millisecond, so a stamp never falls
+// below the one before it.
 //
 // HLC.Now() is monotonic — never decreases even if wall clock jumps back.
 // Receivers update via HLC.Observe() before stamping local records.
+//
+// swarm stamps its records with it; packages that keep their own stamp
+// format fill that format from an HLC (reach's signed records, minerva's
+// CRDT stamps).
 type HLC struct {
 	state atomic.Uint64
+	// now reads the wall clock; nil reads time.Now.
+	now func() time.Time
 }
+
+// maxCounter is the largest value the 16-bit counter holds.
+const maxCounter = 0xFFFF
 
 // NewHLC creates an HLC anchored at the current wall time.
 func NewHLC() *HLC {
-	h := &HLC{}
-	h.state.Store(packHLC(uint64(time.Now().UnixMilli()), 0))
+	return NewHLCWithNow(nil)
+}
+
+// NewHLCWithNow creates an HLC that reads its wall clock from now (nil reads
+// time.Now), anchored at now's current time. Now and Observe both read it, so
+// a caller that injects a clock (reach's Clock, a test that freezes or rewinds
+// the wall) gets the same stamps and the same forward-skew bound as one on the
+// real clock.
+func NewHLCWithNow(now func() time.Time) *HLC {
+	h := &HLC{now: now}
+	h.state.Store(packHLC(h.wallMs(), 0))
 	return h
+}
+
+// wallMs is the wall clock in unix milliseconds.
+func (h *HLC) wallMs() uint64 {
+	if h.now == nil {
+		return uint64(time.Now().UnixMilli())
+	}
+	return uint64(h.now().UnixMilli())
 }
 
 // Now returns the next monotonic HLC value, advancing both the wall and
@@ -34,15 +63,22 @@ func (h *HLC) Now() uint64 {
 	for {
 		cur := h.state.Load()
 		curWall, curCtr := unpackHLC(cur)
-		nowWall := uint64(time.Now().UnixMilli())
+		nowWall := h.wallMs()
 
 		var nextWall, nextCtr uint64
-		if nowWall > curWall {
+		switch {
+		case nowWall > curWall:
 			nextWall = nowWall
 			nextCtr = 0
-		} else {
+		case curCtr < maxCounter:
 			nextWall = curWall
 			nextCtr = curCtr + 1
+		default:
+			// The counter is full for this millisecond: packing curCtr+1
+			// would drop it to 0 and return a stamp below cur, so the
+			// stamp moves to the next millisecond instead.
+			nextWall = curWall + 1
+			nextCtr = 0
 		}
 		next := packHLC(nextWall, nextCtr)
 		if h.state.CompareAndSwap(cur, next) {
@@ -54,7 +90,7 @@ func (h *HLC) Now() uint64 {
 // Observe updates the HLC after seeing a remote timestamp. Ensures local
 // future stamps are strictly greater than the observed value.
 func (h *HLC) Observe(remote uint64) {
-	h.observeAt(remote, time.Now().UnixMilli())
+	h.observeAt(remote, int64(h.wallMs()))
 }
 
 // observeAt is Observe with the wall clock injected (nowMs), so the
@@ -65,10 +101,11 @@ func (h *HLC) Observe(remote uint64) {
 // far-future wall time — malicious, or badly clock-skewed — must not ratchet
 // the local HLC permanently forward: once the wall component is pushed years
 // ahead, Now() can never advance the wall again (now stays below it), so
-// every subsequent stamp only bumps the 16-bit counter, which silently wraps
-// after 65536 events in the same wall-millisecond. Gating the remote against
-// the same forward-skew budget the attestation path uses (crdt.go) closes
-// that vector while still tolerating legitimate cross-region clock skew.
+// every later stamp is issued from that far-future wall instead of real time,
+// and every node that observes one of those stamps is pushed the same way.
+// Gating the remote against the same forward-skew budget the attestation path
+// uses (crdt.go) closes that vector while still tolerating legitimate
+// cross-region clock skew.
 func (h *HLC) observeAt(remote uint64, nowMs int64) {
 	skewMs := uint64(observerForwardSkewBudget.Milliseconds())
 	nowWall := uint64(nowMs)
@@ -103,6 +140,13 @@ func (h *HLC) observeAt(remote uint64, nowMs int64) {
 func Decompose(h uint64) (wallMillis uint64, counter uint16) {
 	w, c := unpackHLC(h)
 	return w, uint16(c)
+}
+
+// Pack returns the HLC value for (wallMillis, counter), the inverse of
+// Decompose. A package that carries the clock in its own format converts a
+// stamp it receives with Pack before passing it to Observe.
+func Pack(wallMillis uint64, counter uint16) uint64 {
+	return packHLC(wallMillis, uint64(counter))
 }
 
 func packHLC(wall, ctr uint64) uint64 {
