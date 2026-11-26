@@ -207,6 +207,8 @@ type Frame struct {
 	//	*Frame_Keepalive
 	//	*Frame_FetchReq
 	//	*Frame_FetchResp
+	//	*Frame_IbltSketch
+	//	*Frame_IbltWant
 	Kind          isFrame_Kind `protobuf_oneof:"kind"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -330,6 +332,24 @@ func (x *Frame) GetFetchResp() *ContentFetchResponse {
 	return nil
 }
 
+func (x *Frame) GetIbltSketch() *IBLTSketch {
+	if x != nil {
+		if x, ok := x.Kind.(*Frame_IbltSketch); ok {
+			return x.IbltSketch
+		}
+	}
+	return nil
+}
+
+func (x *Frame) GetIbltWant() *IBLTWant {
+	if x != nil {
+		if x, ok := x.Kind.(*Frame_IbltWant); ok {
+			return x.IbltWant
+		}
+	}
+	return nil
+}
+
 type isFrame_Kind interface {
 	isFrame_Kind()
 }
@@ -370,6 +390,14 @@ type Frame_FetchResp struct {
 	FetchResp *ContentFetchResponse `protobuf:"bytes,9,opt,name=fetchResp,proto3,oneof"` // point-to-point content reply
 }
 
+type Frame_IbltSketch struct {
+	IbltSketch *IBLTSketch `protobuf:"bytes,10,opt,name=ibltSketch,proto3,oneof"` // set-difference sketch of a topic, answering a probe that asked for one
+}
+
+type Frame_IbltWant struct {
+	IbltWant *IBLTWant `protobuf:"bytes,11,opt,name=ibltWant,proto3,oneof"` // the record versions a sketch showed only its sender holds
+}
+
 func (*Frame_Eager) isFrame_Kind() {}
 
 func (*Frame_Ihave) isFrame_Kind() {}
@@ -387,6 +415,10 @@ func (*Frame_Keepalive) isFrame_Kind() {}
 func (*Frame_FetchReq) isFrame_Kind() {}
 
 func (*Frame_FetchResp) isFrame_Kind() {}
+
+func (*Frame_IbltSketch) isFrame_Kind() {}
+
+func (*Frame_IbltWant) isFrame_Kind() {}
 
 // ContentFetchRequest is a point-to-point pull of content addressed by
 // SHA256 hash. The receiver looks up its local ContentProvider and
@@ -765,11 +797,20 @@ func (x *Prune) GetTopic() string {
 
 // MerkleProbe sends the local Merkle root for a topic + range.
 type MerkleProbe struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Topic         string                 `protobuf:"bytes,1,opt,name=topic,proto3" json:"topic,omitempty"`
-	RangeStart    []byte                 `protobuf:"bytes,2,opt,name=rangeStart,proto3" json:"rangeStart,omitempty"` // first nodeId in range
-	RangeEnd      []byte                 `protobuf:"bytes,3,opt,name=rangeEnd,proto3" json:"rangeEnd,omitempty"`     // last nodeId in range
-	RootHash      []byte                 `protobuf:"bytes,4,opt,name=rootHash,proto3" json:"rootHash,omitempty"`     // local Merkle root for this range
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	Topic      string                 `protobuf:"bytes,1,opt,name=topic,proto3" json:"topic,omitempty"`
+	RangeStart []byte                 `protobuf:"bytes,2,opt,name=rangeStart,proto3" json:"rangeStart,omitempty"` // first nodeId in range
+	RangeEnd   []byte                 `protobuf:"bytes,3,opt,name=rangeEnd,proto3" json:"rangeEnd,omitempty"`     // last nodeId in range
+	RootHash   []byte                 `protobuf:"bytes,4,opt,name=rootHash,proto3" json:"rootHash,omitempty"`     // local Merkle root for this range
+	// ibltCells, on a probe of the whole topic, asks a responder whose root
+	// differs to answer with an IBLTSketch of this many cells instead of the
+	// topic's records; 0 asks for the records. A node that does not know the
+	// field answers with the records, so asking is safe with any peer.
+	IbltCells uint32 `protobuf:"varint,5,opt,name=ibltCells,proto3" json:"ibltCells,omitempty"`
+	// recordCount is how many signed records the prober holds on the topic,
+	// so a responder declines a sketch the count gap alone shows cannot
+	// decode, and answers with the records at once.
+	RecordCount   uint64 `protobuf:"varint,6,opt,name=recordCount,proto3" json:"recordCount,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -832,6 +873,209 @@ func (x *MerkleProbe) GetRootHash() []byte {
 	return nil
 }
 
+func (x *MerkleProbe) GetIbltCells() uint32 {
+	if x != nil {
+		return x.IbltCells
+	}
+	return 0
+}
+
+func (x *MerkleProbe) GetRecordCount() uint64 {
+	if x != nil {
+		return x.RecordCount
+	}
+	return 0
+}
+
+// IBLTCell is one cell of an invertible Bloom lookup table (swarm/iblt).
+type IBLTCell struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	KeySum        []byte                 `protobuf:"bytes,1,opt,name=keySum,proto3" json:"keySum,omitempty"`          // XOR of the 16-byte keys in the cell
+	KeyHashSum    uint64                 `protobuf:"varint,2,opt,name=keyHashSum,proto3" json:"keyHashSum,omitempty"` // XOR of the keys' check hashes
+	Count         int32                  `protobuf:"zigzag32,3,opt,name=count,proto3" json:"count,omitempty"`         // keys added minus keys removed
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *IBLTCell) Reset() {
+	*x = IBLTCell{}
+	mi := &file_swarm_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *IBLTCell) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*IBLTCell) ProtoMessage() {}
+
+func (x *IBLTCell) ProtoReflect() protoreflect.Message {
+	mi := &file_swarm_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use IBLTCell.ProtoReflect.Descriptor instead.
+func (*IBLTCell) Descriptor() ([]byte, []int) {
+	return file_swarm_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *IBLTCell) GetKeySum() []byte {
+	if x != nil {
+		return x.KeySum
+	}
+	return nil
+}
+
+func (x *IBLTCell) GetKeyHashSum() uint64 {
+	if x != nil {
+		return x.KeyHashSum
+	}
+	return 0
+}
+
+func (x *IBLTCell) GetCount() int32 {
+	if x != nil {
+		return x.Count
+	}
+	return 0
+}
+
+// IBLTSketch is a responder's table over the version keys of its signed
+// records on a topic (a key is the first 16 bytes of SHA256 over a record's
+// signable bytes and signature). The prober builds the same-shaped table
+// over its own records, subtracts it and peel-decodes the difference: the
+// keys only the responder holds it asks for with IBLTWant, and the records
+// only it holds it sends in a MerkleRange.
+type IBLTSketch struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Topic         string                 `protobuf:"bytes,1,opt,name=topic,proto3" json:"topic,omitempty"`
+	Cells         []*IBLTCell            `protobuf:"bytes,2,rep,name=cells,proto3" json:"cells,omitempty"`
+	K             uint32                 `protobuf:"varint,3,opt,name=k,proto3" json:"k,omitempty"`       // hash functions per key
+	Seed          uint64                 `protobuf:"varint,4,opt,name=seed,proto3" json:"seed,omitempty"` // position hash seed
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *IBLTSketch) Reset() {
+	*x = IBLTSketch{}
+	mi := &file_swarm_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *IBLTSketch) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*IBLTSketch) ProtoMessage() {}
+
+func (x *IBLTSketch) ProtoReflect() protoreflect.Message {
+	mi := &file_swarm_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use IBLTSketch.ProtoReflect.Descriptor instead.
+func (*IBLTSketch) Descriptor() ([]byte, []int) {
+	return file_swarm_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *IBLTSketch) GetTopic() string {
+	if x != nil {
+		return x.Topic
+	}
+	return ""
+}
+
+func (x *IBLTSketch) GetCells() []*IBLTCell {
+	if x != nil {
+		return x.Cells
+	}
+	return nil
+}
+
+func (x *IBLTSketch) GetK() uint32 {
+	if x != nil {
+		return x.K
+	}
+	return 0
+}
+
+func (x *IBLTSketch) GetSeed() uint64 {
+	if x != nil {
+		return x.Seed
+	}
+	return 0
+}
+
+// IBLTWant asks for the records whose version keys a decoded sketch showed
+// only the receiver holds; the reply is a MerkleRange of those records.
+type IBLTWant struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Topic         string                 `protobuf:"bytes,1,opt,name=topic,proto3" json:"topic,omitempty"`
+	Keys          [][]byte               `protobuf:"bytes,2,rep,name=keys,proto3" json:"keys,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *IBLTWant) Reset() {
+	*x = IBLTWant{}
+	mi := &file_swarm_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *IBLTWant) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*IBLTWant) ProtoMessage() {}
+
+func (x *IBLTWant) ProtoReflect() protoreflect.Message {
+	mi := &file_swarm_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use IBLTWant.ProtoReflect.Descriptor instead.
+func (*IBLTWant) Descriptor() ([]byte, []int) {
+	return file_swarm_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *IBLTWant) GetTopic() string {
+	if x != nil {
+		return x.Topic
+	}
+	return ""
+}
+
+func (x *IBLTWant) GetKeys() [][]byte {
+	if x != nil {
+		return x.Keys
+	}
+	return nil
+}
+
 // MerkleRange is the response: send all Records in a range (or a sub-range
 // hash chain if too large).
 type MerkleRange struct {
@@ -845,7 +1089,7 @@ type MerkleRange struct {
 
 func (x *MerkleRange) Reset() {
 	*x = MerkleRange{}
-	mi := &file_swarm_proto_msgTypes[9]
+	mi := &file_swarm_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -857,7 +1101,7 @@ func (x *MerkleRange) String() string {
 func (*MerkleRange) ProtoMessage() {}
 
 func (x *MerkleRange) ProtoReflect() protoreflect.Message {
-	mi := &file_swarm_proto_msgTypes[9]
+	mi := &file_swarm_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -870,7 +1114,7 @@ func (x *MerkleRange) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MerkleRange.ProtoReflect.Descriptor instead.
 func (*MerkleRange) Descriptor() ([]byte, []int) {
-	return file_swarm_proto_rawDescGZIP(), []int{9}
+	return file_swarm_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *MerkleRange) GetTopic() string {
@@ -903,7 +1147,7 @@ type Keepalive struct {
 
 func (x *Keepalive) Reset() {
 	*x = Keepalive{}
-	mi := &file_swarm_proto_msgTypes[10]
+	mi := &file_swarm_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -915,7 +1159,7 @@ func (x *Keepalive) String() string {
 func (*Keepalive) ProtoMessage() {}
 
 func (x *Keepalive) ProtoReflect() protoreflect.Message {
-	mi := &file_swarm_proto_msgTypes[10]
+	mi := &file_swarm_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -928,7 +1172,7 @@ func (x *Keepalive) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Keepalive.ProtoReflect.Descriptor instead.
 func (*Keepalive) Descriptor() ([]byte, []int) {
-	return file_swarm_proto_rawDescGZIP(), []int{10}
+	return file_swarm_proto_rawDescGZIP(), []int{13}
 }
 
 var File_swarm_proto protoreflect.FileDescriptor
@@ -948,7 +1192,7 @@ const file_swarm_proto_rawDesc = "" +
 	"\x10observedAtUnixMs\x18\t \x01(\x03R\x10observedAtUnixMs\x12\x10\n" +
 	"\x03key\x18\n" +
 	" \x01(\tR\x03key\x12\x1c\n" +
-	"\tbroadcast\x18\v \x01(\bR\tbroadcast\"\xd5\x03\n" +
+	"\tbroadcast\x18\v \x01(\bR\tbroadcast\"\xbf\x04\n" +
 	"\x05Frame\x12+\n" +
 	"\x05eager\x18\x01 \x01(\v2\x13.swarm.v1.EagerPushH\x00R\x05eager\x12'\n" +
 	"\x05ihave\x18\x02 \x01(\v2\x0f.swarm.v1.IHaveH\x00R\x05ihave\x12'\n" +
@@ -958,7 +1202,12 @@ const file_swarm_proto_rawDesc = "" +
 	"\vmerkleRange\x18\x06 \x01(\v2\x15.swarm.v1.MerkleRangeH\x00R\vmerkleRange\x123\n" +
 	"\tkeepalive\x18\a \x01(\v2\x13.swarm.v1.KeepaliveH\x00R\tkeepalive\x12;\n" +
 	"\bfetchReq\x18\b \x01(\v2\x1d.swarm.v1.ContentFetchRequestH\x00R\bfetchReq\x12>\n" +
-	"\tfetchResp\x18\t \x01(\v2\x1e.swarm.v1.ContentFetchResponseH\x00R\tfetchRespB\x06\n" +
+	"\tfetchResp\x18\t \x01(\v2\x1e.swarm.v1.ContentFetchResponseH\x00R\tfetchResp\x126\n" +
+	"\n" +
+	"ibltSketch\x18\n" +
+	" \x01(\v2\x14.swarm.v1.IBLTSketchH\x00R\n" +
+	"ibltSketch\x120\n" +
+	"\bibltWant\x18\v \x01(\v2\x12.swarm.v1.IBLTWantH\x00R\bibltWantB\x06\n" +
 	"\x04kind\"G\n" +
 	"\x13ContentFetchRequest\x12\x1c\n" +
 	"\trequestId\x18\x01 \x01(\x04R\trequestId\x12\x12\n" +
@@ -982,14 +1231,31 @@ const file_swarm_proto_rawDesc = "" +
 	"\x03hlc\x18\x03 \x01(\x04R\x03hlc\x12\x10\n" +
 	"\x03key\x18\x04 \x01(\tR\x03key\"\x1d\n" +
 	"\x05Prune\x12\x14\n" +
-	"\x05topic\x18\x01 \x01(\tR\x05topic\"{\n" +
+	"\x05topic\x18\x01 \x01(\tR\x05topic\"\xbb\x01\n" +
 	"\vMerkleProbe\x12\x14\n" +
 	"\x05topic\x18\x01 \x01(\tR\x05topic\x12\x1e\n" +
 	"\n" +
 	"rangeStart\x18\x02 \x01(\fR\n" +
 	"rangeStart\x12\x1a\n" +
 	"\brangeEnd\x18\x03 \x01(\fR\brangeEnd\x12\x1a\n" +
-	"\brootHash\x18\x04 \x01(\fR\brootHash\"m\n" +
+	"\brootHash\x18\x04 \x01(\fR\brootHash\x12\x1c\n" +
+	"\tibltCells\x18\x05 \x01(\rR\tibltCells\x12 \n" +
+	"\vrecordCount\x18\x06 \x01(\x04R\vrecordCount\"X\n" +
+	"\bIBLTCell\x12\x16\n" +
+	"\x06keySum\x18\x01 \x01(\fR\x06keySum\x12\x1e\n" +
+	"\n" +
+	"keyHashSum\x18\x02 \x01(\x04R\n" +
+	"keyHashSum\x12\x14\n" +
+	"\x05count\x18\x03 \x01(\x11R\x05count\"n\n" +
+	"\n" +
+	"IBLTSketch\x12\x14\n" +
+	"\x05topic\x18\x01 \x01(\tR\x05topic\x12(\n" +
+	"\x05cells\x18\x02 \x03(\v2\x12.swarm.v1.IBLTCellR\x05cells\x12\f\n" +
+	"\x01k\x18\x03 \x01(\rR\x01k\x12\x12\n" +
+	"\x04seed\x18\x04 \x01(\x04R\x04seed\"4\n" +
+	"\bIBLTWant\x12\x14\n" +
+	"\x05topic\x18\x01 \x01(\tR\x05topic\x12\x12\n" +
+	"\x04keys\x18\x02 \x03(\fR\x04keys\"m\n" +
 	"\vMerkleRange\x12\x14\n" +
 	"\x05topic\x18\x01 \x01(\tR\x05topic\x12*\n" +
 	"\arecords\x18\x02 \x03(\v2\x10.swarm.v1.RecordR\arecords\x12\x1c\n" +
@@ -1008,7 +1274,7 @@ func file_swarm_proto_rawDescGZIP() []byte {
 	return file_swarm_proto_rawDescData
 }
 
-var file_swarm_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
+var file_swarm_proto_msgTypes = make([]protoimpl.MessageInfo, 14)
 var file_swarm_proto_goTypes = []any{
 	(*Record)(nil),               // 0: swarm.v1.Record
 	(*Frame)(nil),                // 1: swarm.v1.Frame
@@ -1019,8 +1285,11 @@ var file_swarm_proto_goTypes = []any{
 	(*Graft)(nil),                // 6: swarm.v1.Graft
 	(*Prune)(nil),                // 7: swarm.v1.Prune
 	(*MerkleProbe)(nil),          // 8: swarm.v1.MerkleProbe
-	(*MerkleRange)(nil),          // 9: swarm.v1.MerkleRange
-	(*Keepalive)(nil),            // 10: swarm.v1.Keepalive
+	(*IBLTCell)(nil),             // 9: swarm.v1.IBLTCell
+	(*IBLTSketch)(nil),           // 10: swarm.v1.IBLTSketch
+	(*IBLTWant)(nil),             // 11: swarm.v1.IBLTWant
+	(*MerkleRange)(nil),          // 12: swarm.v1.MerkleRange
+	(*Keepalive)(nil),            // 13: swarm.v1.Keepalive
 }
 var file_swarm_proto_depIdxs = []int32{
 	4,  // 0: swarm.v1.Frame.eager:type_name -> swarm.v1.EagerPush
@@ -1028,17 +1297,20 @@ var file_swarm_proto_depIdxs = []int32{
 	6,  // 2: swarm.v1.Frame.graft:type_name -> swarm.v1.Graft
 	7,  // 3: swarm.v1.Frame.prune:type_name -> swarm.v1.Prune
 	8,  // 4: swarm.v1.Frame.merkle:type_name -> swarm.v1.MerkleProbe
-	9,  // 5: swarm.v1.Frame.merkleRange:type_name -> swarm.v1.MerkleRange
-	10, // 6: swarm.v1.Frame.keepalive:type_name -> swarm.v1.Keepalive
+	12, // 5: swarm.v1.Frame.merkleRange:type_name -> swarm.v1.MerkleRange
+	13, // 6: swarm.v1.Frame.keepalive:type_name -> swarm.v1.Keepalive
 	2,  // 7: swarm.v1.Frame.fetchReq:type_name -> swarm.v1.ContentFetchRequest
 	3,  // 8: swarm.v1.Frame.fetchResp:type_name -> swarm.v1.ContentFetchResponse
-	0,  // 9: swarm.v1.EagerPush.record:type_name -> swarm.v1.Record
-	0,  // 10: swarm.v1.MerkleRange.records:type_name -> swarm.v1.Record
-	11, // [11:11] is the sub-list for method output_type
-	11, // [11:11] is the sub-list for method input_type
-	11, // [11:11] is the sub-list for extension type_name
-	11, // [11:11] is the sub-list for extension extendee
-	0,  // [0:11] is the sub-list for field type_name
+	10, // 9: swarm.v1.Frame.ibltSketch:type_name -> swarm.v1.IBLTSketch
+	11, // 10: swarm.v1.Frame.ibltWant:type_name -> swarm.v1.IBLTWant
+	0,  // 11: swarm.v1.EagerPush.record:type_name -> swarm.v1.Record
+	9,  // 12: swarm.v1.IBLTSketch.cells:type_name -> swarm.v1.IBLTCell
+	0,  // 13: swarm.v1.MerkleRange.records:type_name -> swarm.v1.Record
+	14, // [14:14] is the sub-list for method output_type
+	14, // [14:14] is the sub-list for method input_type
+	14, // [14:14] is the sub-list for extension type_name
+	14, // [14:14] is the sub-list for extension extendee
+	0,  // [0:14] is the sub-list for field type_name
 }
 
 func init() { file_swarm_proto_init() }
@@ -1056,6 +1328,8 @@ func file_swarm_proto_init() {
 		(*Frame_Keepalive)(nil),
 		(*Frame_FetchReq)(nil),
 		(*Frame_FetchResp)(nil),
+		(*Frame_IbltSketch)(nil),
+		(*Frame_IbltWant)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -1063,7 +1337,7 @@ func file_swarm_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_swarm_proto_rawDesc), len(file_swarm_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   11,
+			NumMessages:   14,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

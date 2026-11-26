@@ -201,6 +201,16 @@ func (e *plumtreesEngine) ReceiveFrame(from NodeID, raw []byte) error {
 			e.merkle.HandleRange(from, e.hlc, k.MerkleRange)
 		}
 		return nil
+	case *pb.Frame_IbltSketch:
+		if e.merkle != nil {
+			e.merkle.HandleSketch(from, k.IbltSketch)
+		}
+		return nil
+	case *pb.Frame_IbltWant:
+		if e.merkle != nil {
+			e.merkle.HandleWant(from, k.IbltWant)
+		}
+		return nil
 	case *pb.Frame_Keepalive:
 		return nil
 	case *pb.Frame_FetchReq:

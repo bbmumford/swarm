@@ -80,6 +80,8 @@ message Frame {
     Keepalive            keepalive = 7;      // empty payload, keeps tree edge alive
     ContentFetchRequest  fetchReq = 8;       // point-to-point content pull
     ContentFetchResponse fetchResp = 9;      // point-to-point content reply
+    IBLTSketch           ibltSketch = 10;    // set-difference sketch of a topic, answering a probe that asked for one
+    IBLTWant             ibltWant = 11;      // the record versions a sketch showed only its sender holds
   }
 }
 
@@ -147,6 +149,43 @@ message MerkleProbe {
   bytes  rangeStart = 2; // first nodeId in range
   bytes  rangeEnd = 3;   // last nodeId in range
   bytes  rootHash = 4;    // local Merkle root for this range
+
+  // ibltCells, on a probe of the whole topic, asks a responder whose root
+  // differs to answer with an IBLTSketch of this many cells instead of the
+  // topic's records; 0 asks for the records. A node that does not know the
+  // field answers with the records, so asking is safe with any peer.
+  uint32 ibltCells = 5;
+  // recordCount is how many signed records the prober holds on the topic,
+  // so a responder declines a sketch the count gap alone shows cannot
+  // decode, and answers with the records at once.
+  uint64 recordCount = 6;
+}
+
+// IBLTCell is one cell of an invertible Bloom lookup table (swarm/iblt).
+message IBLTCell {
+  bytes  keySum = 1;     // XOR of the 16-byte keys in the cell
+  uint64 keyHashSum = 2; // XOR of the keys' check hashes
+  sint32 count = 3;      // keys added minus keys removed
+}
+
+// IBLTSketch is a responder's table over the version keys of its signed
+// records on a topic (a key is the first 16 bytes of SHA256 over a record's
+// signable bytes and signature). The prober builds the same-shaped table
+// over its own records, subtracts it and peel-decodes the difference: the
+// keys only the responder holds it asks for with IBLTWant, and the records
+// only it holds it sends in a MerkleRange.
+message IBLTSketch {
+  string topic = 1;
+  repeated IBLTCell cells = 2;
+  uint32 k = 3;          // hash functions per key
+  uint64 seed = 4;       // position hash seed
+}
+
+// IBLTWant asks for the records whose version keys a decoded sketch showed
+// only the receiver holds; the reply is a MerkleRange of those records.
+message IBLTWant {
+  string topic = 1;
+  repeated bytes keys = 2;
 }
 
 // MerkleRange is the response: send all Records in a range (or a sub-range

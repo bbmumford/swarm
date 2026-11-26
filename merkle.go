@@ -102,7 +102,18 @@ type merkleEngine struct {
 	// rumor starts the push of a record HandleRange applied as new, with
 	// the peer the range came from excluded. Set via SetRumor.
 	rumor func(from NodeID, r Record)
+
+	// ibltAsked holds, per (peer, topic), the sketch size the last
+	// whole-topic probe asked for; HandleSketch accepts only that sketch
+	// and clears the entry. At most maxSketchRequests entries are held (a
+	// peer that never answers leaves one per topic): past that a probe asks
+	// for records.
+	ibltMu    sync.Mutex
+	ibltAsked map[string]uint32
 }
+
+// maxSketchRequests bounds merkleEngine.ibltAsked.
+const maxSketchRequests = 4096
 
 // SetInboundGate installs the shared pre-store admission gate.
 func (m *merkleEngine) SetInboundGate(g *inboundGate) { m.gate = g }
@@ -145,6 +156,7 @@ func newMerkle(store *recordStore, peers *peerTable, tport Transport, nowFn func
 		probeSalt:      salt,
 		lastProbe:      make(map[Topic]time.Time),
 		lastReciprocal: make(map[string]time.Time),
+		ibltAsked:      make(map[string]uint32),
 	}
 }
 
@@ -221,19 +233,43 @@ func (m *merkleEngine) Roots() map[Topic][32]byte {
 	return out
 }
 
-// sendProbe sends a MerkleProbe frame to peer for the given topic + range.
+// sendProbe sends a MerkleProbe frame to peer for the given topic + range. A
+// probe of the whole topic asks for a sketch when this node holds enough
+// records for one to pay (firstSketchCells, ibltsync.go).
 func (m *merkleEngine) sendProbe(to NodeID, topic Topic, rangeStart, rangeEnd []byte) {
-	root := topicMerkleRoot(m.store, topic, rangeStart, rangeEnd)
-	frame, err := encodeFrame(&pb.Frame{
-		Kind: &pb.Frame_Merkle{
-			Merkle: &pb.MerkleProbe{
-				Topic:      string(topic),
-				RangeStart: rangeStart,
-				RangeEnd:   rangeEnd,
-				RootHash:   root[:],
-			},
-		},
-	})
+	if rangeStart == nil && rangeEnd == nil {
+		m.sendProbeAsking(to, topic, m.firstSketchCells(len(m.store.topicRecordsSigned(topic))))
+		return
+	}
+	m.sendProbeFrame(&pb.MerkleProbe{Topic: string(topic), RangeStart: rangeStart, RangeEnd: rangeEnd}, to)
+}
+
+// sendProbeAsking sends a whole-topic probe asking for a sketch of cells
+// cells, 0 asking for records, and records the request so HandleSketch
+// accepts only the sketch asked for.
+func (m *merkleEngine) sendProbeAsking(to NodeID, topic Topic, cells uint32) {
+	if cells > 0 {
+		m.ibltMu.Lock()
+		slot := ibltSlot(to, topic)
+		if _, held := m.ibltAsked[slot]; !held && len(m.ibltAsked) >= maxSketchRequests {
+			cells = 0
+		} else {
+			m.ibltAsked[slot] = cells
+		}
+		m.ibltMu.Unlock()
+	}
+	m.sendProbeFrame(&pb.MerkleProbe{
+		Topic:       string(topic),
+		IbltCells:   cells,
+		RecordCount: uint64(len(m.store.topicRecordsSigned(topic))),
+	}, to)
+}
+
+// sendProbeFrame stamps p with this node's root over p's range and sends it.
+func (m *merkleEngine) sendProbeFrame(p *pb.MerkleProbe, to NodeID) {
+	root := topicMerkleRoot(m.store, Topic(p.Topic), p.RangeStart, p.RangeEnd)
+	p.RootHash = root[:]
+	frame, err := encodeFrame(&pb.Frame{Kind: &pb.Frame_Merkle{Merkle: p}})
 	if err != nil {
 		return
 	}
@@ -247,6 +283,13 @@ func (m *merkleEngine) HandleProbe(from NodeID, p *pb.MerkleProbe) {
 	localRoot := topicMerkleRoot(m.store, topic, p.RangeStart, p.RangeEnd)
 	if bytesEqual(localRoot[:], p.RootHash) {
 		return // roots match, no drift
+	}
+
+	// A prober that asked for a sketch and can decode one gets it instead of
+	// the records below; the exchange that follows moves records both ways,
+	// so no reciprocal probe is needed.
+	if m.answerWithSketch(from, p) {
+		return
 	}
 
 	// Reciprocal probe (rate-limited): a probe only ever moves records
