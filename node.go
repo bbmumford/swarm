@@ -59,6 +59,11 @@ type nodeImpl struct {
 
 	// Transport — set on Start via Wire().
 	tport Transport
+
+	// beforeStartLock, when set, runs in Start after its first stopped check
+	// and before it takes lifeMu, the window a concurrent Stop can land in;
+	// TestStopInsideStartsWindowReturnsStart sets it, and it is nil otherwise.
+	beforeStartLock func()
 }
 
 // New creates a Node. Returned Node is not started.
@@ -166,11 +171,21 @@ func (n *nodeImpl) Start(ctx context.Context) error {
 		// orphan the first invocation's cancel func — refuse.
 		return ErrAlreadyStarted
 	}
+	if n.beforeStartLock != nil {
+		n.beforeStartLock()
+	}
 	startCtx, startCancel := context.WithCancel(ctx)
+	// The stopped check, the cancel Stop reads and the ticker's wg.Add share
+	// lifeMu with Stop's read of that cancel: a Stop that takes lifeMu first is
+	// seen here and Start returns, and a Start that takes it first has added to
+	// wg before Stop's wg.Wait begins, as WaitGroup requires of an Add.
 	n.lifeMu.Lock()
+	if n.stopped.Load() {
+		n.lifeMu.Unlock()
+		startCancel()
+		return ErrStopped
+	}
 	n.startCtx, n.startCancel = startCtx, startCancel
-	n.lifeMu.Unlock()
-
 	if !n.cfg.DisableBackgroundTicker {
 		// Background tick: drive Plumtrees graft timer, Merkle
 		// anti-entropy probes, and TTL reaping.
@@ -180,6 +195,7 @@ func (n *nodeImpl) Start(ctx context.Context) error {
 			n.runTickLoop(startCtx)
 		}()
 	}
+	n.lifeMu.Unlock()
 
 	<-startCtx.Done()
 	return nil
