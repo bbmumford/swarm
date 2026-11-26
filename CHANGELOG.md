@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/bbmumford/swarm/compare/v0.1.0...v0.2.0) (2026-11-26)
+
+
+### Features
+
+* an HLC can read an injected wall clock, and a full counter carries into the next millisecond ([888e15a](https://github.com/bbmumford/swarm/commit/888e15a6c8b4492cd77f5c6774f467e87dc0bbfc))
+
 ## [0.1.0](https://github.com/bbmumford/swarm/compare/v0.0.9...v0.1.0) (2026-11-25)
 
 
