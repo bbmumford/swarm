@@ -35,12 +35,14 @@ jobs:
           manifest-file: .github/.release-please-manifest.json
 
       # A tag pushed with the workflow token starts no other workflow, so without
-      # the App the new release's checks are started here. A tag the App's
-      # token pushed has started them already, so this step does not run then
-      # and each release runs its checks once.
-      - name: Run the release workflow on the new tag
+      # the App the new release's checks and docs are started here. A tag the
+      # App's token pushed has started them already, so this step does not run
+      # then and each release runs them once.
+      - name: Run the release and docs workflows on the new tag
         if: ${{ steps.release.outputs.release_created && steps.app.outputs.token == '' }}
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.release.outputs.tag_name }}
-        run: gh workflow run release.yml --repo "$GITHUB_REPOSITORY" --ref "$TAG"
+        run: |
+          gh workflow run release.yml --repo "$GITHUB_REPOSITORY" --ref "$TAG"
+          gh workflow run docs.yml --repo "$GITHUB_REPOSITORY" --ref "$TAG"
