@@ -14,7 +14,8 @@ import (
 // TestStopDuringStartDoesNotRace stops nodes while their Start is still
 // setting up. Under the race detector a Stop whose wg.Wait ran beside Start's
 // wg.Add for the ticker was reported as a data race; Start must also return
-// once the node is stopped.
+// once the node is stopped, with nil when the Stop came after its setup and
+// ErrStopped when it came before.
 func TestStopDuringStartDoesNotRace(t *testing.T) {
 	for i := 0; i < 200; i++ {
 		_, priv, err := ed25519.GenerateKey(rand.Reader)
@@ -33,7 +34,11 @@ func TestStopDuringStartDoesNotRace(t *testing.T) {
 		go func() { done <- n.Start(ctx) }()
 		_ = n.Stop()
 		select {
-		case <-done:
+		case err := <-done:
+			if err != nil && err != ErrStopped {
+				cancel()
+				t.Fatalf("run %d: Start returned %v after Stop, want nil or ErrStopped", i, err)
+			}
 		case <-time.After(5 * time.Second):
 			cancel()
 			t.Fatalf("run %d: Start did not return after Stop", i)
