@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.3.0](https://github.com/bbmumford/swarm/compare/v0.2.0...v0.3.0) (2026-11-28)
+
+
+### Features
+
+* anti-entropy repairs a large topic by IBLT set difference, moving only the records that differ ([53dbc40](https://github.com/bbmumford/swarm/commit/53dbc406f9f62a3ca89f3f789fb66c8ef39dd260))
+* the eager tree is seeded along hypercube dimensions, a topic can have its own merge rule, and a node can broadcast messages that are never stored ([37614a1](https://github.com/bbmumford/swarm/commit/37614a17e9ac6c4ebe15b38a2d976cb7061e992f))
+
+
+### Bug Fixes
+
+* a node stopped while Start is still setting up returns from Start, and Stop no longer races Start's WaitGroup Add ([dd40257](https://github.com/bbmumford/swarm/commit/dd40257b68a9cfd9d9337a29ccc4ad34ae7b8f48))
+* anti-entropy skips the records it already holds before checking their signatures, so repeated ranges cannot starve the missing ones ([a0085f0](https://github.com/bbmumford/swarm/commit/a0085f0a982b7f6e773ebcb1dcc66c7ea4e35a3e))
+
 ## [0.2.0](https://github.com/bbmumford/swarm/compare/v0.1.0...v0.2.0) (2026-11-26)
 
 
